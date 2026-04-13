@@ -1,5 +1,5 @@
 use anyhow::Result;
-use arb_types::{ArbOpportunity, PriceQuote, SimResult};
+use arb_types::{ArbOpportunity, PriceQuote, SimResult, SwapSignal};
 use sqlx::PgPool;
 
 /// Insert a batch of price snapshots
@@ -19,6 +19,7 @@ pub async fn insert_price_snapshots(pool: &PgPool, quotes: &[PriceQuote]) -> Res
         .bind(match q.source {
             arb_types::PriceSource::HttpPoll => "http_poll",
             arb_types::PriceSource::WebSocket => "websocket",
+            arb_types::PriceSource::ForgeStream => "forge_stream",
         })
         .bind(q.timestamp)
         .execute(pool)
@@ -235,4 +236,143 @@ pub struct DexBreakdownRow {
     pub sell_dex: String,
     pub count: Option<i64>,
     pub avg_spread: Option<f64>,
+}
+
+// ── Swap Signal Queries ──
+
+pub async fn insert_signal(
+    pool: &PgPool,
+    signal: &SwapSignal,
+    triggered_scan: bool,
+    scan_profitable: Option<bool>,
+) -> Result<()> {
+    sqlx::query(
+        r#"
+        INSERT INTO swap_signals
+            (signature, token_mint, platform, signer, direction, sol_equivalent,
+             triggered_scan, scan_profitable, received_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        "#,
+    )
+    .bind(&signal.signature)
+    .bind(&signal.token_mint)
+    .bind(signal.platform.as_str())
+    .bind(&signal.signer)
+    .bind(signal.direction.to_string())
+    .bind(signal.sol_equivalent)
+    .bind(triggered_scan)
+    .bind(scan_profitable)
+    .bind(signal.timestamp)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn get_recent_signals(pool: &PgPool, limit: i64) -> Result<Vec<SignalRow>> {
+    let rows = sqlx::query_as::<_, SignalRow>(
+        r#"
+        SELECT id, signature, token_mint, platform, signer, direction,
+               sol_equivalent, triggered_scan, scan_profitable, received_at
+        FROM swap_signals
+        ORDER BY received_at DESC
+        LIMIT $1
+        "#,
+    )
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
+pub async fn get_signal_stats(pool: &PgPool) -> Result<SignalStatsRow> {
+    let row = sqlx::query_as::<_, SignalStatsRow>(
+        r#"
+        SELECT
+            COUNT(*)::bigint as total_signals,
+            COUNT(*) FILTER (WHERE triggered_scan)::bigint as total_scans,
+            COUNT(*) FILTER (WHERE scan_profitable = true)::bigint as profitable_scans,
+            COALESCE(AVG(sol_equivalent), 0)::float8 as avg_sol_size
+        FROM swap_signals
+        "#,
+    )
+    .fetch_one(pool)
+    .await?;
+    Ok(row)
+}
+
+#[derive(sqlx::FromRow, serde::Serialize)]
+pub struct SignalRow {
+    pub id: i64,
+    pub signature: Option<String>,
+    pub token_mint: Option<String>,
+    pub platform: Option<String>,
+    pub signer: Option<String>,
+    pub direction: Option<String>,
+    pub sol_equivalent: Option<f64>,
+    pub triggered_scan: Option<bool>,
+    pub scan_profitable: Option<bool>,
+    pub received_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+#[derive(sqlx::FromRow, serde::Serialize)]
+pub struct SignalStatsRow {
+    pub total_signals: Option<i64>,
+    pub total_scans: Option<i64>,
+    pub profitable_scans: Option<i64>,
+    pub avg_sol_size: Option<f64>,
+}
+
+// ── Token Safety Queries ──
+
+pub async fn insert_token_safety(
+    pool: &PgPool,
+    mint: &str,
+    rugcheck_score: Option<f64>,
+    risk_level: &str,
+    mint_revoked: bool,
+    freeze_revoked: bool,
+    top_holder_pct: f64,
+    safe: bool,
+) -> Result<()> {
+    sqlx::query(
+        r#"
+        INSERT INTO token_safety (mint, rugcheck_score, risk_level, mint_revoked, freeze_revoked, top_holder_pct, safe)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        ON CONFLICT (mint) DO UPDATE SET
+            rugcheck_score = $2, risk_level = $3, mint_revoked = $4,
+            freeze_revoked = $5, top_holder_pct = $6, safe = $7, checked_at = NOW()
+        "#,
+    )
+    .bind(mint)
+    .bind(rugcheck_score)
+    .bind(risk_level)
+    .bind(mint_revoked)
+    .bind(freeze_revoked)
+    .bind(top_holder_pct)
+    .bind(safe)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn get_token_safety(pool: &PgPool, mint: &str) -> Result<Option<TokenSafetyRow>> {
+    let row = sqlx::query_as::<_, TokenSafetyRow>(
+        "SELECT mint, rugcheck_score, risk_level, mint_revoked, freeze_revoked, top_holder_pct, safe, checked_at FROM token_safety WHERE mint = $1",
+    )
+    .bind(mint)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row)
+}
+
+#[derive(sqlx::FromRow, serde::Serialize)]
+pub struct TokenSafetyRow {
+    pub mint: String,
+    pub rugcheck_score: Option<f64>,
+    pub risk_level: Option<String>,
+    pub mint_revoked: Option<bool>,
+    pub freeze_revoked: Option<bool>,
+    pub top_holder_pct: Option<f64>,
+    pub safe: Option<bool>,
+    pub checked_at: Option<chrono::DateTime<chrono::Utc>>,
 }

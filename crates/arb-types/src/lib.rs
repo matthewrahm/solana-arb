@@ -106,6 +106,50 @@ impl std::fmt::Display for Dex {
 pub enum PriceSource {
     HttpPoll,
     WebSocket,
+    ForgeStream,
+}
+
+// ── Forge Integration Types ──
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SwapDirection {
+    Buy,
+    Sell,
+}
+
+impl std::fmt::Display for SwapDirection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SwapDirection::Buy => write!(f, "BUY"),
+            SwapDirection::Sell => write!(f, "SELL"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SwapSignal {
+    pub signature: String,
+    pub slot: u64,
+    pub platform: Dex,
+    pub signer: String,
+    pub token_mint: String,
+    pub token_symbol: Option<String>,
+    pub direction: SwapDirection,
+    pub sol_equivalent: f64,
+    pub timestamp: DateTime<Utc>,
+}
+
+impl Dex {
+    /// Map from forge's platform string to our Dex enum
+    pub fn from_forge_platform(platform: &str) -> Self {
+        match platform {
+            "raydium" => Dex::Raydium,
+            "jupiter" => Dex::Jupiter,
+            "pumpfun" => Dex::PumpFun,
+            _ => Dex::Unknown,
+        }
+    }
 }
 
 // ── Core Data Types ──

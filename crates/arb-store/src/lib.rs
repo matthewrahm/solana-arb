@@ -16,6 +16,13 @@ pub async fn create_pool(database_url: &str) -> Result<PgPool> {
 pub async fn run_migrations(pool: &PgPool) -> Result<()> {
     let schema = include_str!("../../../migrations/001_schema.sql");
     sqlx::raw_sql(schema).execute(pool).await?;
+
+    let signals = include_str!("../../../migrations/002_swap_signals.sql");
+    sqlx::raw_sql(signals).execute(pool).await?;
+
+    let safety = include_str!("../../../migrations/003_token_safety.sql");
+    sqlx::raw_sql(safety).execute(pool).await?;
+
     info!("Database migrations applied");
     Ok(())
 }

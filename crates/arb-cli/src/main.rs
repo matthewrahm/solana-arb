@@ -6,7 +6,9 @@ use tokio::sync::{mpsc, RwLock};
 use tracing::{error, info, warn};
 
 use arb_detect::detector::Detector;
-use arb_types::{GraduationEvent, PriceQuote, WSOL_MINT};
+use arb_detect::swap_analyzer::SwapAnalyzer;
+use arb_detect::volume_tracker::VolumeTracker;
+use arb_types::{GraduationEvent, PriceQuote, SwapSignal, WSOL_MINT};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -46,6 +48,26 @@ struct Args {
     /// Disable WebSocket pool monitoring (HTTP polling only)
     #[arg(long)]
     no_ws: bool,
+
+    /// Forge WebSocket URL for real-time swap stream
+    #[arg(long, default_value = "ws://localhost:3001/ws/events")]
+    forge_url: String,
+
+    /// Disable forge feed (no swap-triggered scanning)
+    #[arg(long)]
+    no_forge: bool,
+
+    /// Minimum SOL value for forge swap signals to trigger scans
+    #[arg(long, default_value = "10")]
+    min_signal_sol: f64,
+
+    /// Whale wallet addresses to prioritize (comma-separated)
+    #[arg(long, value_delimiter = ',')]
+    whale: Vec<String>,
+
+    /// Path to whale wallets file (one address per line)
+    #[arg(long)]
+    whale_file: Option<String>,
 }
 
 #[tokio::main]
@@ -351,20 +373,180 @@ async fn main() -> Result<()> {
         }
     });
 
+    // Forge feed: real-time swap stream from solana-forge
+    let (signal_tx, mut signal_rx) = mpsc::channel::<SwapSignal>(1000);
+
+    if !args.no_forge {
+        let forge_url = args.forge_url.clone();
+        let forge_signal_tx = signal_tx.clone();
+        tokio::spawn(async move {
+            loop {
+                match arb_feed::forge_feed::run_forge_feed(&forge_url, forge_signal_tx.clone()).await {
+                    Ok(()) => info!("Forge feed ended, reconnecting in 5s..."),
+                    Err(e) => error!("Forge feed error: {}. Reconnecting in 5s...", e),
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            }
+        });
+        info!("Forge feed enabled ({})", args.forge_url);
+    } else {
+        info!("Forge feed disabled");
+    }
+    drop(signal_tx); // drop original so channel closes when forge task's clone drops
+
+    // Swap analyzer for forge signals
+    let swap_analyzer = SwapAnalyzer::new(args.min_signal_sol);
+
+    // Whale tracker for prioritizing known profitable wallets
+    let mut whale_tracker = if let Some(ref path) = args.whale_file {
+        arb_feed::whale_tracker::WhaleTracker::load_from_file(std::path::Path::new(path))
+    } else {
+        arb_feed::whale_tracker::WhaleTracker::new()
+    };
+    whale_tracker.add_wallets(&args.whale);
+    if whale_tracker.wallet_count() > 0 {
+        info!("Tracking {} whale wallets", whale_tracker.wallet_count());
+    }
+
+    // Volume tracker for detecting activity spikes
+    let mut volume_tracker = VolumeTracker::new();
+
     // Drop the original sender so channel closes when all senders are dropped
     drop(quote_tx);
 
-    // Main loop: consume price quotes, detect opportunities, store
+    // Main loop: consume price quotes AND forge swap signals
     let store_pool = pool.clone();
     let mut opp_count: u64 = 0;
     let mut quote_count: u64 = 0;
     let mut ws_quote_count: u64 = 0;
+    let mut signal_count: u64 = 0;
+    let mut triggered_count: u64 = 0;
 
     info!("Pipeline running. Polling every {}s...", args.poll_interval);
     info!("Min spread threshold: {} bps", args.min_spread);
+    info!("Min signal size: {} SOL", args.min_signal_sol);
     info!("API: http://localhost:{}/api/v1/opportunities", args.port);
 
-    while let Some(quote) = quote_rx.recv().await {
+    loop {
+        let quote = tokio::select! {
+            q = quote_rx.recv() => {
+                match q {
+                    Some(q) => Some(q),
+                    None => break, // all senders dropped
+                }
+            }
+            sig = signal_rx.recv() => {
+                if let Some(signal) = sig {
+                    signal_count += 1;
+
+                    let is_whale = whale_tracker.is_whale(&signal.signer);
+                    let whale_tag = if is_whale { " [WHALE]" } else { "" };
+
+                    info!(
+                        "FORGE [{:>5}] {} {:.1} SOL {} on {} [{}]{}",
+                        signal_count,
+                        signal.direction,
+                        signal.sol_equivalent,
+                        signal.token_symbol.as_deref().unwrap_or("?"),
+                        signal.platform,
+                        &signal.signature[..8.min(signal.signature.len())],
+                        whale_tag,
+                    );
+
+                    // Track volume for spike detection
+                    let is_hot = volume_tracker.record_swap(&signal.token_mint);
+                    if is_hot {
+                        // Volume spike detected -- trigger a round-trip scan
+                        let hot_scanner = arb_sim::ProfitScanner::new(sol_usd_price.clone());
+                        let hot_mint = signal.token_mint.clone();
+                        let hot_symbol = signal.token_symbol.clone()
+                            .unwrap_or_else(|| format!("{}..{}", &hot_mint[..4], &hot_mint[hot_mint.len()-4..]));
+                        let hot_pool = store_pool.clone();
+                        tokio::spawn(async move {
+                            match hot_scanner.scan_round_trip(&hot_mint, &hot_symbol).await {
+                                Ok(r) if r.profitable => {
+                                    let sol_usd = *hot_scanner.sol_usd_price.read().await;
+                                    let net_sol = r.net_profit_lamports as f64 / 1e9;
+                                    info!(
+                                        "VOLUME-SPIKE PROFIT {} | +{:.6} SOL (${:.4}) | {}",
+                                        hot_symbol, net_sol, net_sol * sol_usd, r.route_description,
+                                    );
+                                    let sim = r.to_sim_result();
+                                    arb_store::queries::insert_simulation(&hot_pool, &sim).await.ok();
+                                }
+                                Ok(_) => {} // not profitable
+                                Err(e) => warn!("Volume-spike scan failed for {}: {}", hot_symbol, e),
+                            }
+                        });
+                    }
+
+                    // Periodic cleanup (every ~1000 signals)
+                    if signal_count % 1000 == 0 {
+                        volume_tracker.cleanup();
+                    }
+
+                    // Analyze signal and trigger scan if actionable
+                    if let Some(req) = swap_analyzer.analyze(&signal) {
+                        triggered_count += 1;
+                        let symbol = req.token_symbol.clone()
+                            .unwrap_or_else(|| format!("{}..{}", &req.token_mint[..4], &req.token_mint[req.token_mint.len()-4..]));
+                        let trig_scanner = arb_sim::ProfitScanner::new(sol_usd_price.clone());
+                        let trig_pool = store_pool.clone();
+                        let trig_signal = signal.clone();
+
+                        tokio::spawn(async move {
+                            match trig_scanner.scan_triggered(
+                                &req.token_mint,
+                                &symbol,
+                                req.trigger_dex,
+                                req.trigger_direction,
+                            ).await {
+                                Ok(r) => {
+                                    let profitable = r.profitable;
+                                    let sol_usd = *trig_scanner.sol_usd_price.read().await;
+                                    let net_sol = r.net_profit_lamports as f64 / 1e9;
+
+                                    if profitable {
+                                        info!(
+                                            "FORGE PROFIT {} | +{:.6} SOL (${:.4}) | {:.1} bps | {}",
+                                            symbol, net_sol, net_sol * sol_usd, r.profit_bps, r.route_description,
+                                        );
+                                    }
+
+                                    // Store signal result
+                                    arb_store::queries::insert_signal(
+                                        &trig_pool, &trig_signal, true, Some(profitable),
+                                    ).await.ok();
+
+                                    // Store simulation if profitable
+                                    if profitable {
+                                        let sim = r.to_sim_result();
+                                        arb_store::queries::insert_simulation(&trig_pool, &sim).await.ok();
+                                    }
+                                }
+                                Err(e) => {
+                                    warn!("Triggered scan failed for {}: {}", symbol, e);
+                                    arb_store::queries::insert_signal(
+                                        &trig_pool, &trig_signal, true, None,
+                                    ).await.ok();
+                                }
+                            }
+                        });
+                    } else {
+                        // Signal received but not actionable
+                        arb_store::queries::insert_signal(
+                            &store_pool, &signal, false, None,
+                        ).await.ok();
+                    }
+                }
+                continue; // back to select!
+            }
+        };
+
+        let quote = match quote {
+            Some(q) => q,
+            None => break,
+        };
         quote_count += 1;
 
         let is_ws = quote.source == arb_types::PriceSource::WebSocket;
@@ -500,11 +682,13 @@ async fn main() -> Result<()> {
         // Periodic stats
         if quote_count % 100 == 0 {
             info!(
-                "Stats: {} quotes ({} WS, {} HTTP), {} opportunities",
+                "Stats: {} quotes ({} WS, {} HTTP), {} opportunities, {} signals ({} triggered)",
                 quote_count,
                 ws_quote_count,
                 quote_count - ws_quote_count,
-                opp_count
+                opp_count,
+                signal_count,
+                triggered_count,
             );
         }
     }

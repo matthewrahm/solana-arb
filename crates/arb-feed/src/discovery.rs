@@ -8,6 +8,7 @@ use std::collections::HashSet;
 use tracing::{info, warn};
 
 use crate::pool_discovery;
+use crate::rugcheck::RugCheckClient;
 
 /// A discovered token that passes safety checks
 #[derive(Debug, Clone)]
@@ -60,6 +61,7 @@ pub async fn discover_new_tokens(
 
     let mut results = Vec::new();
     let dex_client = crate::dexscreener::DexScreenerClient::new();
+    let rugcheck = RugCheckClient::new();
 
     // Check each token's pairs and safety
     for (i, token) in solana_tokens.iter().enumerate().take(10) {
@@ -87,11 +89,37 @@ pub async fn discover_new_tokens(
                     .flatten()
                     .unwrap_or_else(|| format!("{}..{}", &token.token_address[..4], &token.token_address[token.token_address.len()-4..]));
 
-                // Safety check via RPC (if available)
-                let (safe, note) = if let Some(rpc) = rpc_url {
+                // Safety check: RPC on-chain checks + RugCheck API
+                let (rpc_safe, rpc_note) = if let Some(rpc) = rpc_url {
                     check_token_safety(rpc, &token.token_address).await
                 } else {
-                    (true, "no RPC - safety unchecked".to_string())
+                    (true, "no RPC".to_string())
+                };
+
+                let (safe, note) = if !rpc_safe {
+                    (false, rpc_note)
+                } else {
+                    // RPC passed, now check RugCheck for deeper analysis
+                    match rugcheck.get_report(&token.token_address).await {
+                        Ok(Some(report)) => {
+                            let score = report.score.unwrap_or(0.0);
+                            let top_pct = report.top_holder_pct();
+                            let rug_safe = score >= 50.0 && top_pct < 30.0;
+                            let note = format!(
+                                "{} | rugcheck: {:.0} ({}) top10: {:.1}%",
+                                rpc_note, score, report.risk_level(), top_pct
+                            );
+                            (rug_safe, note)
+                        }
+                        Ok(None) => {
+                            // RugCheck API unavailable, rely on RPC checks only
+                            (rpc_safe, format!("{} | rugcheck: unavailable", rpc_note))
+                        }
+                        Err(e) => {
+                            warn!("RugCheck failed for {}: {}", &token.token_address[..8], e);
+                            (rpc_safe, format!("{} | rugcheck: error", rpc_note))
+                        }
+                    }
                 };
 
                 info!(

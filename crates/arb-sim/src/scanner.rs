@@ -4,10 +4,10 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use arb_types::{SimResult, WSOL_MINT};
+use arb_types::{Dex, SimResult, SwapDirection, WSOL_MINT};
 use chrono::Utc;
 use tokio::sync::RwLock;
-use tracing::warn;
+use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::jupiter_quote::JupiterQuoteClient;
@@ -209,6 +209,113 @@ impl ProfitScanner {
 }
 
 impl ProfitScanner {
+    /// Swap-triggered scan: reacts to an on-chain swap signal by checking
+    /// cross-venue pricing with DEX-directed routing.
+    ///
+    /// Instead of unrestricted Jupiter routing (which optimizes away the spread),
+    /// this restricts each leg to specific venues based on the trigger signal.
+    pub async fn scan_triggered(
+        &self,
+        token_mint: &str,
+        token_symbol: &str,
+        trigger_dex: Dex,
+        trigger_direction: SwapDirection,
+    ) -> Result<ScanResult> {
+        // Strategy based on trigger direction:
+        // BUY on trigger_dex -> price UP there -> buy from others, sell on trigger
+        // SELL on trigger_dex -> price DOWN there -> buy on trigger, sell on others
+        let (buy_restrict, sell_restrict) = match trigger_direction {
+            SwapDirection::Buy => (None, Some(trigger_dex)),
+            SwapDirection::Sell => (Some(trigger_dex), None),
+        };
+
+        // Leg 1: SOL -> TOKEN (buy from cheaper venue)
+        let leg1 = self.quote_client
+            .get_quote(WSOL_MINT, token_mint, self.trade_size_lamports, self.slippage_bps, buy_restrict)
+            .await;
+
+        // Fallback to unrestricted if DEX-restricted quote fails
+        let leg1 = match leg1 {
+            Ok(q) => q,
+            Err(_) if buy_restrict.is_some() => {
+                self.quote_client
+                    .get_quote(WSOL_MINT, token_mint, self.trade_size_lamports, self.slippage_bps, None)
+                    .await?
+            }
+            Err(e) => return Err(e),
+        };
+
+        let leg1_out: u64 = leg1.out_amount.parse()?;
+        if leg1_out == 0 {
+            anyhow::bail!("Triggered leg 1 returned zero");
+        }
+
+        let leg1_route = JupiterQuoteClient::primary_route_label(&leg1)
+            .unwrap_or("?").to_string();
+
+        // Shorter delay for triggered scans (high priority)
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // Leg 2: TOKEN -> SOL (sell on more expensive venue)
+        let leg2 = self.quote_client
+            .get_quote(token_mint, WSOL_MINT, leg1_out, self.slippage_bps, sell_restrict)
+            .await;
+
+        let leg2 = match leg2 {
+            Ok(q) => q,
+            Err(_) if sell_restrict.is_some() => {
+                self.quote_client
+                    .get_quote(token_mint, WSOL_MINT, leg1_out, self.slippage_bps, None)
+                    .await?
+            }
+            Err(e) => return Err(e),
+        };
+
+        let leg2_out: u64 = leg2.out_amount.parse()?;
+
+        let leg2_route = JupiterQuoteClient::primary_route_label(&leg2)
+            .unwrap_or("?").to_string();
+
+        let input = self.trade_size_lamports as i64;
+        let output = leg2_out as i64;
+        let gross = output - input;
+        let net = gross - ROUND_TRIP_TX_COST;
+        let profit_bps = (gross as f64 / input as f64) * 10_000.0;
+
+        let tag = match trigger_direction {
+            SwapDirection::Buy => format!("{} price UP", trigger_dex),
+            SwapDirection::Sell => format!("{} price DOWN", trigger_dex),
+        };
+
+        let result = ScanResult {
+            scan_type: ScanType::RoundTrip,
+            token_symbol: token_symbol.to_string(),
+            token_mint: token_mint.to_string(),
+            input_lamports: self.trade_size_lamports,
+            output_lamports: leg2_out,
+            gross_profit_lamports: gross,
+            net_profit_lamports: net,
+            profit_bps,
+            route_description: format!(
+                "TRIGGERED({}) SOL -[{}]-> {} -[{}]-> SOL",
+                tag, leg1_route, token_symbol, leg2_route
+            ),
+            profitable: net > 0,
+        };
+
+        if result.profitable {
+            info!(
+                "TRIGGERED *** PROFIT *** {} | +{:.6} SOL | {:.1} bps | {}",
+                token_symbol,
+                net as f64 / 1e9,
+                profit_bps,
+                result.route_description,
+            );
+        }
+
+        Ok(result)
+    }
+
     /// Graduation sniper: repeatedly scan a just-graduated token for 60 seconds.
     /// The idea: right after PumpFun migration, the new pool may be mispriced
     /// relative to Jupiter's optimal routing for 10-30 seconds.

@@ -1,4 +1,4 @@
-use axum::{extract::State, routing::get, Json, Router};
+use axum::{extract::{Path, State}, routing::get, Json, Router};
 use sqlx::PgPool;
 use tower_http::cors::CorsLayer;
 use tower_http::services::ServeDir;
@@ -20,6 +20,9 @@ pub fn build_router(pool: PgPool) -> Router {
         .route("/api/v1/simulations", get(get_simulations))
         .route("/api/v1/simulations/stats", get(get_simulation_stats))
         .route("/api/v1/dex-breakdown", get(get_dex_breakdown))
+        .route("/api/v1/signals", get(get_signals))
+        .route("/api/v1/signals/stats", get(get_signal_stats))
+        .route("/api/v1/safety/{mint}", get(get_safety))
         .route("/api/v1/health", get(health))
         .fallback_service(ServeDir::new("public"))
         .layer(CorsLayer::permissive())
@@ -70,6 +73,34 @@ async fn get_dex_breakdown(
         .await
         .map_err(|e| StatusError(format!("{e}")))?;
     Ok(Json(breakdown))
+}
+
+async fn get_signals(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<queries::SignalRow>>, StatusError> {
+    let signals = queries::get_recent_signals(&state.pool, 50)
+        .await
+        .map_err(|e| StatusError(format!("{e}")))?;
+    Ok(Json(signals))
+}
+
+async fn get_signal_stats(
+    State(state): State<AppState>,
+) -> Result<Json<queries::SignalStatsRow>, StatusError> {
+    let stats = queries::get_signal_stats(&state.pool)
+        .await
+        .map_err(|e| StatusError(format!("{e}")))?;
+    Ok(Json(stats))
+}
+
+async fn get_safety(
+    State(state): State<AppState>,
+    Path(mint): Path<String>,
+) -> Result<Json<Option<queries::TokenSafetyRow>>, StatusError> {
+    let safety = queries::get_token_safety(&state.pool, &mint)
+        .await
+        .map_err(|e| StatusError(format!("{e}")))?;
+    Ok(Json(safety))
 }
 
 async fn health() -> &'static str {

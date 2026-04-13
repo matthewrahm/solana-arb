@@ -216,6 +216,14 @@
         <div class="stat-label">Total Sim P&L</div>
         <div class="stat-value" id="stat-pnl">--</div>
       </div>
+      <div class="stat-card">
+        <div class="stat-label">Forge Signals</div>
+        <div class="stat-value" id="stat-signals">--</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Signal Hit Rate</div>
+        <div class="stat-value" id="stat-hitrate">--</div>
+      </div>
     </div>
 
     <!-- Recent Opportunities -->
@@ -255,6 +263,27 @@
         </thead>
         <tbody id="sims-body">
           <tr><td colspan="6" class="empty-state">Loading...</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Forge Signals -->
+    <div class="section-header">Forge Swap Signals</div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Token</th>
+            <th>Direction</th>
+            <th>Platform</th>
+            <th class="right">SOL Size</th>
+            <th>Scanned</th>
+            <th>Result</th>
+            <th class="right">Time</th>
+          </tr>
+        </thead>
+        <tbody id="signals-body">
+          <tr><td colspan="7" class="empty-state">No forge signals yet</td></tr>
         </tbody>
       </table>
     </div>
@@ -406,6 +435,46 @@
       }).join('');
     }
 
+    async function updateSignals() {
+      const signals = await fetchJson('/api/v1/signals');
+      const signalStats = await fetchJson('/api/v1/signals/stats');
+      const tbody = document.getElementById('signals-body');
+
+      if (signalStats) {
+        document.getElementById('stat-signals').textContent = signalStats.total_signals || 0;
+        const scans = signalStats.total_scans || 0;
+        const profitable = signalStats.profitable_scans || 0;
+        const rate = scans > 0 ? ((profitable / scans) * 100).toFixed(1) + '%' : '0%';
+        document.getElementById('stat-hitrate').textContent = rate;
+      }
+
+      if (!signals || signals.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="7" class="empty-state">No forge signals yet</td></tr>';
+        return;
+      }
+      tbody.innerHTML = signals.slice(0, 25).map(s => {
+        const scanned = s.triggered_scan ? 'Yes' : 'No';
+        const resultBadge = s.scan_profitable === true
+          ? '<span class="badge badge-profit">PROFIT</span>'
+          : s.scan_profitable === false
+            ? '<span class="badge badge-loss">NO ARB</span>'
+            : '<span class="badge badge-info">--</span>';
+        const mint = s.token_mint || '--';
+        const shortMint = mint.length > 8 ? mint.slice(0, 4) + '..' + mint.slice(-4) : mint;
+        return `
+          <tr>
+            <td class="primary mono">${shortMint}</td>
+            <td>${s.direction || '--'}</td>
+            <td>${s.platform || '--'}</td>
+            <td class="right mono">${s.sol_equivalent ? fmt(s.sol_equivalent, 1) : '--'}</td>
+            <td>${scanned}</td>
+            <td>${resultBadge}</td>
+            <td class="right" style="color: var(--text-muted)">${s.received_at ? timeAgo(s.received_at) : '--'}</td>
+          </tr>
+        `;
+      }).join('');
+    }
+
     async function updateDexBreakdown() {
       const breakdown = await fetchJson('/api/v1/dex-breakdown');
       const tbody = document.getElementById('dex-body');
@@ -428,6 +497,7 @@
         updateStats(),
         updateOpportunities(),
         updateSimulations(),
+        updateSignals(),
         updateDexBreakdown(),
       ]);
     }
