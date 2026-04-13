@@ -1,10 +1,12 @@
+use std::sync::Arc;
+
 use anyhow::Result;
 use clap::Parser;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, RwLock};
 use tracing::{error, info};
 
 use arb_detect::detector::Detector;
-use arb_types::{PriceQuote, BONK_MINT};
+use arb_types::{GraduationEvent, PriceQuote, BONK_MINT, WSOL_MINT};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -40,6 +42,10 @@ struct Args {
     /// Additional token mints to watch (comma-separated)
     #[arg(long, value_delimiter = ',')]
     watch: Vec<String>,
+
+    /// Disable WebSocket pool monitoring (HTTP polling only)
+    #[arg(long)]
+    no_ws: bool,
 }
 
 #[tokio::main]
@@ -60,13 +66,17 @@ async fn main() -> Result<()> {
         .or_else(|| std::env::var("DATABASE_URL").ok())
         .unwrap_or_else(|| "postgres://localhost/solana_arb".to_string());
 
+    let helius_api_key = args
+        .api_key
+        .or_else(|| std::env::var("HELIUS_API_KEY").ok());
+
     // Connect to Postgres and run migrations
     info!("Connecting to database...");
     let pool = arb_store::create_pool(&database_url).await?;
     arb_store::run_migrations(&pool).await?;
     info!("Database ready");
 
-    // Build watch list: always include BONK, plus any user-specified tokens
+    // Build watch list
     let mut watch_mints = vec![BONK_MINT.to_string()];
     for mint in &args.watch {
         if !watch_mints.contains(mint) {
@@ -79,7 +89,7 @@ async fn main() -> Result<()> {
         info!("  {}", mint);
     }
 
-    // Resolve token symbols for display
+    // Resolve token symbols
     let dex_client = arb_feed::dexscreener::DexScreenerClient::new();
     let mut detector = Detector::new(args.min_spread, 30);
 
@@ -91,7 +101,7 @@ async fn main() -> Result<()> {
         }
     }
 
-    // Channel for price quotes
+    // Channel for price quotes (shared between HTTP poller and WebSocket monitor)
     let (quote_tx, mut quote_rx) = mpsc::channel::<PriceQuote>(5000);
 
     // Start API server
@@ -108,23 +118,93 @@ async fn main() -> Result<()> {
             .expect("API server crashed");
     });
 
-    // Start price poller
+    // Start HTTP price poller (clone tx before moving to poller)
+    let poll_tx = quote_tx.clone();
     let poll_mints = watch_mints.clone();
     let poll_interval = args.poll_interval;
     let min_liquidity = args.min_liquidity;
     tokio::spawn(async move {
         if let Err(e) =
-            arb_feed::poller::run_poll_loop(poll_mints, poll_interval, min_liquidity, quote_tx)
+            arb_feed::poller::run_poll_loop(poll_mints, poll_interval, min_liquidity, poll_tx)
                 .await
         {
             error!("Poller crashed: {}", e);
         }
     });
 
+    // Start WebSocket pool monitor (if API key provided and not disabled)
+    if let Some(ref api_key) = helius_api_key {
+        if !args.no_ws {
+            // SOL/USD price tracker (shared with WebSocket monitor)
+            let sol_usd_price = Arc::new(RwLock::new(0.0));
+
+            // Background: update SOL/USD every 30s
+            let sol_price_ref = sol_usd_price.clone();
+            tokio::spawn(async move {
+                let jup = arb_feed::jupiter::JupiterClient::new();
+                loop {
+                    match jup.get_price(WSOL_MINT).await {
+                        Ok(price) if price > 0.0 => {
+                            *sol_price_ref.write().await = price;
+                            info!("SOL/USD: ${:.2}", price);
+                        }
+                        Ok(_) => {}
+                        Err(e) => error!("SOL/USD fetch failed: {}", e),
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                }
+            });
+
+            // Wait for initial SOL price
+            tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+
+            // Graduation event channel
+            let (grad_tx, mut grad_rx) = mpsc::channel::<GraduationEvent>(100);
+
+            // Start WebSocket pool monitor
+            let ws_tx = quote_tx.clone();
+            let ws_mints = watch_mints.clone();
+            let ws_key = api_key.clone();
+            let ws_sol_price = sol_usd_price.clone();
+            let ws_min_liq = min_liquidity;
+            tokio::spawn(async move {
+                let monitor = arb_feed::pool_monitor::PoolMonitor::new(
+                    &ws_key, ws_tx, grad_tx, ws_sol_price,
+                );
+                loop {
+                    if let Err(e) = monitor.run(ws_mints.clone(), ws_min_liq).await {
+                        error!("WebSocket monitor error: {}. Restarting in 5s...", e);
+                        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    }
+                }
+            });
+
+            // Graduation handler
+            tokio::spawn(async move {
+                while let Some(event) = grad_rx.recv().await {
+                    info!(
+                        "GRADUATION: {} (curve {}) at {}",
+                        &event.base_mint[..8],
+                        &event.bonding_curve_address[..8],
+                        event.graduated_at
+                    );
+                }
+            });
+
+            info!("WebSocket pool monitor enabled");
+        }
+    } else {
+        info!("No HELIUS_API_KEY provided, running HTTP polling only");
+    }
+
+    // Drop the original sender so channel closes when all senders are dropped
+    drop(quote_tx);
+
     // Main loop: consume price quotes, detect opportunities, store
     let store_pool = pool.clone();
     let mut opp_count: u64 = 0;
     let mut quote_count: u64 = 0;
+    let mut ws_quote_count: u64 = 0;
 
     info!("Pipeline running. Polling every {}s...", args.poll_interval);
     info!("Min spread threshold: {} bps", args.min_spread);
@@ -133,14 +213,20 @@ async fn main() -> Result<()> {
     while let Some(quote) = quote_rx.recv().await {
         quote_count += 1;
 
-        // Log every 10th price update to keep output readable
-        if quote_count % 10 == 1 {
+        let is_ws = quote.source == arb_types::PriceSource::WebSocket;
+        if is_ws {
+            ws_quote_count += 1;
+        }
+
+        // Log prices: always log WebSocket quotes (they're the interesting ones)
+        if is_ws || quote_count % 10 == 1 {
+            let src = if is_ws { "WS" } else { "HTTP" };
             info!(
-                "PRICE [{:>8}] ${:.10} on {:>8} | {} venues tracked (liq: ${:.0})",
+                "PRICE [{:>4}] [{:>8}] ${:.10} on {:>8} (liq: ${:.0})",
+                src,
                 &quote.base_mint[..8],
                 quote.price_usd,
                 quote.dex,
-                quote_count,
                 quote.liquidity_usd
             );
         }
@@ -170,6 +256,17 @@ async fn main() -> Result<()> {
             if let Err(e) = arb_store::queries::insert_opportunity(&store_pool, &opp).await {
                 error!("DB write failed (opp): {}", e);
             }
+        }
+
+        // Periodic stats
+        if quote_count % 100 == 0 {
+            info!(
+                "Stats: {} quotes ({} WS, {} HTTP), {} opportunities",
+                quote_count,
+                ws_quote_count,
+                quote_count - ws_quote_count,
+                opp_count
+            );
         }
     }
 

@@ -13,7 +13,7 @@ pub const USDC_MINT: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 pub const RAYDIUM_AMM_V4: &str = "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8";
 pub const JUPITER_V6: &str = "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4";
 pub const PUMPFUN: &str = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P";
-pub const ORCA_WHIRLPOOL: &str = "JCgmhCsyPeFmFGE9hCqP6N1uZcsj6iyKCPrYMqTfZC5";
+pub const ORCA_WHIRLPOOL: &str = "whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc";
 pub const METEORA_DAMM_V2: &str = "cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG";
 
 // ── Default Fees (bps) ──
@@ -114,6 +114,22 @@ pub struct ArbOpportunity {
     pub estimated_profit_usd: f64,
     pub detected_at: DateTime<Utc>,
     pub detection_latency_ms: u64,
+}
+
+// ── WebSocket Pool Types ──
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GraduationEvent {
+    pub bonding_curve_address: String,
+    pub base_mint: String,
+    pub token_symbol: String,
+    pub graduated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RaydiumVaults {
+    pub coin_vault: String,
+    pub pc_vault: String,
 }
 
 // ── Configuration ──

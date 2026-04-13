@@ -17,6 +17,7 @@ struct DexPair {
     liquidity: Option<Liquidity>,
     pair_address: Option<String>,
     base_token: Option<BaseToken>,
+    quote_token: Option<QuoteToken>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -27,6 +28,11 @@ struct Liquidity {
 #[derive(Deserialize, Debug)]
 struct BaseToken {
     symbol: Option<String>,
+}
+
+#[derive(Deserialize, Debug)]
+struct QuoteToken {
+    address: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -77,7 +83,7 @@ impl DexScreenerClient {
                 Some(PriceQuote {
                     dex,
                     base_mint: mint.to_string(),
-                    quote_mint: String::new(), // DexScreener doesn't split this cleanly
+                    quote_mint: pair.quote_token.as_ref().and_then(|q| q.address.clone()).unwrap_or_default(),
                     price_usd: price,
                     liquidity_usd: liquidity,
                     pool_address: pair.pair_address,
