@@ -1,6 +1,7 @@
 use axum::{extract::State, routing::get, Json, Router};
 use sqlx::PgPool;
 use tower_http::cors::CorsLayer;
+use tower_http::services::ServeDir;
 use tower_http::trace::TraceLayer;
 
 use arb_store::queries;
@@ -16,7 +17,11 @@ pub fn build_router(pool: PgPool) -> Router {
     Router::new()
         .route("/api/v1/opportunities", get(get_opportunities))
         .route("/api/v1/stats", get(get_stats))
+        .route("/api/v1/simulations", get(get_simulations))
+        .route("/api/v1/simulations/stats", get(get_simulation_stats))
+        .route("/api/v1/dex-breakdown", get(get_dex_breakdown))
         .route("/api/v1/health", get(health))
+        .fallback_service(ServeDir::new("public"))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(state)
@@ -38,6 +43,33 @@ async fn get_stats(
         .await
         .map_err(|e| StatusError(format!("{e}")))?;
     Ok(Json(stats))
+}
+
+async fn get_simulations(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<queries::SimulationRow>>, StatusError> {
+    let sims = queries::get_recent_simulations(&state.pool, 50)
+        .await
+        .map_err(|e| StatusError(format!("{e}")))?;
+    Ok(Json(sims))
+}
+
+async fn get_simulation_stats(
+    State(state): State<AppState>,
+) -> Result<Json<queries::SimStatsRow>, StatusError> {
+    let stats = queries::get_simulation_stats(&state.pool)
+        .await
+        .map_err(|e| StatusError(format!("{e}")))?;
+    Ok(Json(stats))
+}
+
+async fn get_dex_breakdown(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<queries::DexBreakdownRow>>, StatusError> {
+    let breakdown = queries::get_dex_breakdown(&state.pool)
+        .await
+        .map_err(|e| StatusError(format!("{e}")))?;
+    Ok(Json(breakdown))
 }
 
 async fn health() -> &'static str {

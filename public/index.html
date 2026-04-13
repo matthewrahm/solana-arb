@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>solana-arb</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-page: #09090b;
+      --bg-card: #18181b;
+      --bg-elevated: #27272a;
+      --text-primary: #fafafa;
+      --text-secondary: #a1a1aa;
+      --text-muted: #71717a;
+      --border-subtle: rgba(255,255,255,0.06);
+      --border-default: rgba(255,255,255,0.10);
+      --border-hover: rgba(255,255,255,0.20);
+      --accent: #6366f1;
+      --profit: #22c55e;
+      --loss: #ef4444;
+      --profit-bg: rgba(34,197,94,0.12);
+      --loss-bg: rgba(239,68,68,0.12);
+      --radius: 12px;
+      --radius-sm: 8px;
+      --font-ui: 'Inter', system-ui, sans-serif;
+      --font-mono: 'JetBrains Mono', monospace;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: var(--bg-page);
+      color: var(--text-primary);
+      font-family: var(--font-ui);
+      font-size: 14px;
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+    }
+    .container { max-width: 1200px; margin: 0 auto; padding: 32px 24px; }
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 32px;
+      padding-bottom: 20px;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    header h1 {
+      font-size: 24px;
+      font-weight: 600;
+      letter-spacing: -0.03em;
+      color: var(--text-primary);
+    }
+    header h1 span { color: var(--accent); }
+    .status {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 14px;
+      border-radius: 9999px;
+      font-size: 12px;
+      font-weight: 500;
+      background: rgba(34,197,94,0.12);
+      color: #22c55e;
+    }
+    .status-dot {
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: #22c55e;
+    }
+
+    /* Stat Cards */
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 16px;
+      margin-bottom: 32px;
+    }
+    .stat-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius);
+      padding: 20px;
+      transition: border-color 150ms ease;
+    }
+    .stat-card:hover { border-color: var(--border-hover); }
+    .stat-label {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--text-muted);
+      margin-bottom: 8px;
+    }
+    .stat-value {
+      font-family: var(--font-mono);
+      font-size: 24px;
+      font-weight: 500;
+      font-variant-numeric: tabular-nums;
+      color: var(--text-primary);
+    }
+    .stat-value.profit { color: var(--profit); }
+    .stat-value.loss { color: var(--loss); }
+
+    /* Section Headers */
+    .section-header {
+      font-size: 16px;
+      font-weight: 500;
+      color: var(--text-primary);
+      margin-bottom: 16px;
+      margin-top: 8px;
+    }
+
+    /* Tables */
+    .table-wrap {
+      background: var(--bg-card);
+      border: 1px solid var(--border-default);
+      border-radius: var(--radius);
+      overflow: hidden;
+      margin-bottom: 32px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+    thead th {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--text-muted);
+      padding: 12px 16px;
+      text-align: left;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    thead th.right { text-align: right; }
+    tbody td {
+      font-size: 13px;
+      padding: 10px 16px;
+      border-bottom: 1px solid var(--border-subtle);
+      color: var(--text-secondary);
+    }
+    tbody td.mono {
+      font-family: var(--font-mono);
+      font-variant-numeric: tabular-nums;
+    }
+    tbody td.right { text-align: right; }
+    tbody td.profit { color: var(--profit); }
+    tbody td.loss { color: var(--loss); }
+    tbody td.primary { color: var(--text-primary); font-weight: 500; }
+    tbody tr:hover { background: rgba(255,255,255,0.03); }
+    tbody tr:last-child td { border-bottom: none; }
+
+    /* Badges */
+    .badge {
+      display: inline-flex;
+      padding: 3px 10px;
+      border-radius: 9999px;
+      font-size: 11px;
+      font-weight: 500;
+    }
+    .badge-profit { background: var(--profit-bg); color: var(--profit); }
+    .badge-loss { background: var(--loss-bg); color: var(--loss); }
+    .badge-info { background: rgba(99,102,241,0.12); color: #818cf8; }
+
+    .empty-state {
+      padding: 32px;
+      text-align: center;
+      color: var(--text-muted);
+      font-size: 13px;
+    }
+    .footer {
+      margin-top: 48px;
+      padding-top: 20px;
+      border-top: 1px solid var(--border-subtle);
+      text-align: center;
+      color: var(--text-muted);
+      font-size: 12px;
+    }
+    .footer a { color: var(--accent); text-decoration: none; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1><span>solana</span>-arb</h1>
+      <div class="status" id="status">
+        <div class="status-dot"></div>
+        Loading...
+      </div>
+    </header>
+
+    <!-- Stats Cards -->
+    <div class="stats-grid">
+      <div class="stat-card">
+        <div class="stat-label">Opportunities</div>
+        <div class="stat-value" id="stat-opps">--</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Avg Spread</div>
+        <div class="stat-value" id="stat-spread">--</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Tokens Watched</div>
+        <div class="stat-value" id="stat-tokens">--</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Simulations</div>
+        <div class="stat-value" id="stat-sims">--</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Sim Win Rate</div>
+        <div class="stat-value" id="stat-winrate">--</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Total Sim P&L</div>
+        <div class="stat-value" id="stat-pnl">--</div>
+      </div>
+    </div>
+
+    <!-- Recent Opportunities -->
+    <div class="section-header">Recent Opportunities</div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Token</th>
+            <th>Buy DEX</th>
+            <th>Sell DEX</th>
+            <th class="right">Spread</th>
+            <th class="right">Est. Profit</th>
+            <th class="right">Latency</th>
+            <th class="right">Time</th>
+          </tr>
+        </thead>
+        <tbody id="opps-body">
+          <tr><td colspan="7" class="empty-state">Loading...</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Recent Simulations -->
+    <div class="section-header">Recent Simulations</div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Token</th>
+            <th class="right">Input</th>
+            <th class="right">Output</th>
+            <th class="right">P&L</th>
+            <th>Status</th>
+            <th class="right">Time</th>
+          </tr>
+        </thead>
+        <tbody id="sims-body">
+          <tr><td colspan="6" class="empty-state">Loading...</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- DEX Breakdown -->
+    <div class="section-header">DEX Pair Breakdown</div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Buy DEX</th>
+            <th>Sell DEX</th>
+            <th class="right">Count</th>
+            <th class="right">Avg Spread</th>
+          </tr>
+        </thead>
+        <tbody id="dex-body">
+          <tr><td colspan="4" class="empty-state">Loading...</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="footer">
+      solana-arb &middot; Rust MEV/Arbitrage Detection Engine &middot;
+      <a href="https://github.com/matthewrahm/solana-arb">GitHub</a>
+    </div>
+  </div>
+
+  <script>
+    const API = '';
+
+    function fmt(n, dec = 2) {
+      if (n == null) return '--';
+      return Number(n).toFixed(dec);
+    }
+
+    function fmtUsd(n) {
+      if (n == null) return '--';
+      return '$' + Number(n).toFixed(4);
+    }
+
+    function fmtSol(lamports) {
+      if (lamports == null) return '--';
+      return fmt(lamports / 1e9, 4) + ' SOL';
+    }
+
+    function fmtPnlSol(lamports) {
+      if (lamports == null) return '--';
+      const sol = lamports / 1e9;
+      const prefix = sol > 0 ? '+' : '';
+      return prefix + fmt(sol, 6) + ' SOL';
+    }
+
+    function timeAgo(isoStr) {
+      const diff = (Date.now() - new Date(isoStr).getTime()) / 1000;
+      if (diff < 60) return Math.floor(diff) + 's ago';
+      if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
+      if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
+      return Math.floor(diff / 86400) + 'd ago';
+    }
+
+    function pnlClass(val) {
+      if (val == null) return '';
+      return val > 0 ? 'profit' : 'loss';
+    }
+
+    async function fetchJson(url) {
+      try {
+        const r = await fetch(API + url);
+        if (!r.ok) return null;
+        return await r.json();
+      } catch { return null; }
+    }
+
+    async function updateStats() {
+      const stats = await fetchJson('/api/v1/stats');
+      const simStats = await fetchJson('/api/v1/simulations/stats');
+
+      if (stats) {
+        document.getElementById('stat-opps').textContent = stats.total_opportunities || 0;
+        document.getElementById('stat-spread').textContent = fmt(stats.avg_spread_bps, 1) + ' bps';
+        document.getElementById('stat-tokens').textContent = stats.tokens_monitored || 0;
+      }
+
+      if (simStats) {
+        document.getElementById('stat-sims').textContent = simStats.total_simulations || 0;
+
+        const total = simStats.successful || 0;
+        const profitable = simStats.profitable || 0;
+        const rate = total > 0 ? ((profitable / total) * 100).toFixed(1) + '%' : '0%';
+        document.getElementById('stat-winrate').textContent = rate;
+
+        const pnlLamports = simStats.total_profit_lamports || 0;
+        const pnlSol = pnlLamports / 1e9;
+        const pnlEl = document.getElementById('stat-pnl');
+        pnlEl.textContent = (pnlSol > 0 ? '+' : '') + fmt(pnlSol, 4) + ' SOL';
+        pnlEl.className = 'stat-value ' + pnlClass(pnlSol);
+      }
+
+      document.getElementById('status').innerHTML =
+        '<div class="status-dot"></div>Live';
+    }
+
+    async function updateOpportunities() {
+      const opps = await fetchJson('/api/v1/opportunities');
+      const tbody = document.getElementById('opps-body');
+      if (!opps || opps.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="7" class="empty-state">No opportunities detected yet</td></tr>';
+        return;
+      }
+      tbody.innerHTML = opps.slice(0, 25).map(o => `
+        <tr>
+          <td class="primary">${o.token_symbol}</td>
+          <td>${o.buy_dex}</td>
+          <td>${o.sell_dex}</td>
+          <td class="right mono">${fmt(o.net_spread_bps, 1)} bps</td>
+          <td class="right mono">${fmtUsd(o.estimated_profit_usd)}</td>
+          <td class="right mono">${o.detection_latency_ms != null ? o.detection_latency_ms + 'ms' : '--'}</td>
+          <td class="right" style="color: var(--text-muted)">${timeAgo(o.detected_at)}</td>
+        </tr>
+      `).join('');
+    }
+
+    async function updateSimulations() {
+      const sims = await fetchJson('/api/v1/simulations');
+      const tbody = document.getElementById('sims-body');
+      if (!sims || sims.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="6" class="empty-state">No simulations yet</td></tr>';
+        return;
+      }
+      tbody.innerHTML = sims.slice(0, 20).map(s => {
+        const profitLamports = s.simulated_profit_lamports;
+        const cls = pnlClass(profitLamports);
+        const statusBadge = s.simulation_success
+          ? (profitLamports > 0
+            ? '<span class="badge badge-profit">PROFIT</span>'
+            : '<span class="badge badge-loss">LOSS</span>')
+          : '<span class="badge badge-info">FAIL</span>';
+        return `
+          <tr>
+            <td class="primary">${s.token_symbol || '--'}</td>
+            <td class="right mono">${fmtSol(s.input_amount)}</td>
+            <td class="right mono">${s.simulated_output ? fmtSol(s.simulated_output) : '--'}</td>
+            <td class="right mono ${cls}">${fmtPnlSol(profitLamports)}</td>
+            <td>${statusBadge}</td>
+            <td class="right" style="color: var(--text-muted)">${timeAgo(s.simulated_at)}</td>
+          </tr>
+        `;
+      }).join('');
+    }
+
+    async function updateDexBreakdown() {
+      const breakdown = await fetchJson('/api/v1/dex-breakdown');
+      const tbody = document.getElementById('dex-body');
+      if (!breakdown || breakdown.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="4" class="empty-state">No data yet</td></tr>';
+        return;
+      }
+      tbody.innerHTML = breakdown.map(d => `
+        <tr>
+          <td>${d.buy_dex}</td>
+          <td>${d.sell_dex}</td>
+          <td class="right mono">${d.count || 0}</td>
+          <td class="right mono">${fmt(d.avg_spread, 1)} bps</td>
+        </tr>
+      `).join('');
+    }
+
+    async function refresh() {
+      await Promise.all([
+        updateStats(),
+        updateOpportunities(),
+        updateSimulations(),
+        updateDexBreakdown(),
+      ]);
+    }
+
+    refresh();
+    setInterval(refresh, 5000);
+  </script>
+</body>
+</html>

@@ -20,7 +20,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 reqwest = { version = "0.12", features = ["json"] }
 sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "chrono", "json", "uuid"] }
 axum = "0.8"
-tower-http = { version = "0.6", features = ["cors", "trace"] }
+tower-http = { version = "0.6", features = ["cors", "trace", "fs"] }
 clap = { version = "4", features = ["derive"] }
 dotenvy = "0.15"
 tokio-tungstenite = { version = "0.24", features = ["native-tls"] }

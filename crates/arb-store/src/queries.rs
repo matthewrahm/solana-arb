@@ -140,6 +140,62 @@ pub struct OpportunityRow {
     pub detection_latency_ms: Option<i64>,
 }
 
+/// Get recent simulation results
+pub async fn get_recent_simulations(pool: &PgPool, limit: i64) -> Result<Vec<SimulationRow>> {
+    let rows = sqlx::query_as::<_, SimulationRow>(
+        r#"
+        SELECT s.id, s.opportunity_id, s.input_amount, s.simulated_output,
+               s.simulated_profit_lamports, s.tx_fee_lamports, s.simulation_success,
+               s.error_message, s.simulated_at,
+               COALESCE(o.token_symbol, 'scan') as token_symbol
+        FROM simulations s
+        LEFT JOIN arb_opportunities o ON s.opportunity_id = o.id AND s.opportunity_id != '00000000-0000-0000-0000-000000000000'
+        ORDER BY s.simulated_at DESC
+        LIMIT $1
+        "#,
+    )
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
+/// Get simulation aggregate stats
+pub async fn get_simulation_stats(pool: &PgPool) -> Result<SimStatsRow> {
+    let row = sqlx::query_as::<_, SimStatsRow>(
+        r#"
+        SELECT
+            COUNT(*)::bigint as total_simulations,
+            COUNT(*) FILTER (WHERE simulation_success)::bigint as successful,
+            COUNT(*) FILTER (WHERE simulation_success AND simulated_profit_lamports > 0)::bigint as profitable,
+            COALESCE(AVG(simulated_profit_lamports::float8) FILTER (WHERE simulation_success), 0)::float8 as avg_profit_lamports,
+            COALESCE(MAX(simulated_profit_lamports::float8) FILTER (WHERE simulation_success), 0)::float8 as best_profit_lamports,
+            COALESCE(SUM(simulated_profit_lamports::float8) FILTER (WHERE simulation_success), 0)::float8 as total_profit_lamports
+        FROM simulations
+        "#,
+    )
+    .fetch_one(pool)
+    .await?;
+    Ok(row)
+}
+
+/// Get opportunity count per DEX pair
+pub async fn get_dex_breakdown(pool: &PgPool) -> Result<Vec<DexBreakdownRow>> {
+    let rows = sqlx::query_as::<_, DexBreakdownRow>(
+        r#"
+        SELECT buy_dex, sell_dex, COUNT(*)::bigint as count,
+               COALESCE(AVG(net_spread_bps), 0) as avg_spread
+        FROM arb_opportunities
+        GROUP BY buy_dex, sell_dex
+        ORDER BY count DESC
+        LIMIT 20
+        "#,
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
 #[derive(sqlx::FromRow, serde::Serialize)]
 pub struct StatsRow {
     pub total_opportunities: Option<i64>,
@@ -147,4 +203,36 @@ pub struct StatsRow {
     pub max_spread_bps: Option<f64>,
     pub total_estimated_profit: Option<f64>,
     pub tokens_monitored: Option<i64>,
+}
+
+#[derive(sqlx::FromRow, serde::Serialize)]
+pub struct SimulationRow {
+    pub id: uuid::Uuid,
+    pub opportunity_id: Option<uuid::Uuid>,
+    pub input_amount: i64,
+    pub simulated_output: Option<i64>,
+    pub simulated_profit_lamports: Option<i64>,
+    pub tx_fee_lamports: Option<i64>,
+    pub simulation_success: bool,
+    pub error_message: Option<String>,
+    pub simulated_at: chrono::DateTime<chrono::Utc>,
+    pub token_symbol: String,
+}
+
+#[derive(sqlx::FromRow, serde::Serialize)]
+pub struct SimStatsRow {
+    pub total_simulations: Option<i64>,
+    pub successful: Option<i64>,
+    pub profitable: Option<i64>,
+    pub avg_profit_lamports: Option<f64>,
+    pub best_profit_lamports: Option<f64>,
+    pub total_profit_lamports: Option<f64>,
+}
+
+#[derive(sqlx::FromRow, serde::Serialize)]
+pub struct DexBreakdownRow {
+    pub buy_dex: String,
+    pub sell_dex: String,
+    pub count: Option<i64>,
+    pub avg_spread: Option<f64>,
 }
