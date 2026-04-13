@@ -27,6 +27,11 @@ pub async fn run_poll_loop(
         for mint in &watch_mints {
             match client.get_all_pairs(mint, min_liquidity).await {
                 Ok(quotes) => {
+                    info!(
+                        "Polled {} pairs for {}",
+                        quotes.len(),
+                        &mint[..8]
+                    );
                     for quote in quotes {
                         if tx.send(quote).await.is_err() {
                             info!("Channel closed, stopping poller");

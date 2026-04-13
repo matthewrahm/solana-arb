@@ -49,7 +49,7 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "arb=info,tower_http=info".into()),
+                .unwrap_or_else(|_| "arb=info,solana_arb=info,tower_http=info".into()),
         )
         .init();
 
@@ -133,20 +133,21 @@ async fn main() -> Result<()> {
     while let Some(quote) = quote_rx.recv().await {
         quote_count += 1;
 
-        // Log price updates periodically
-        if quote_count % 20 == 0 {
+        // Log every 10th price update to keep output readable
+        if quote_count % 10 == 1 {
             info!(
-                "PRICE [{:>8}] ${:.8} on {} (liq: ${:.0})",
-                quote.base_mint[..8].to_string(),
+                "PRICE [{:>8}] ${:.10} on {:>8} | {} venues tracked (liq: ${:.0})",
+                &quote.base_mint[..8],
                 quote.price_usd,
                 quote.dex,
+                quote_count,
                 quote.liquidity_usd
             );
         }
 
         // Store price snapshot
         if let Err(e) = arb_store::queries::insert_price_snapshots(&store_pool, &[quote.clone()]).await {
-            error!("Failed to store price: {}", e);
+            error!("DB write failed: {}", e);
         }
 
         // Run detection
@@ -154,7 +155,7 @@ async fn main() -> Result<()> {
             opp_count += 1;
 
             info!(
-                "ARB #{} {} | BUY on {} @ ${:.8} | SELL on {} @ ${:.8} | spread: {:.1} bps (net: {:.1} bps) | est. profit: ${:.4}",
+                "ARB #{} {} | BUY {} @ ${:.8} | SELL {} @ ${:.8} | spread {:.1} bps (net {:.1}) | est profit ${:.4}",
                 opp_count,
                 opp.token_symbol,
                 opp.buy_dex,
@@ -167,7 +168,7 @@ async fn main() -> Result<()> {
             );
 
             if let Err(e) = arb_store::queries::insert_opportunity(&store_pool, &opp).await {
-                error!("Failed to store opportunity: {}", e);
+                error!("DB write failed (opp): {}", e);
             }
         }
     }
