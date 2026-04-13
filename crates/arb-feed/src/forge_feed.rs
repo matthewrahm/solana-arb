@@ -81,8 +81,8 @@ pub struct ForgeTokenAmount {
 
 // ── Forge Feed Consumer ──
 
-const MIN_SOL_EQUIVALENT: f64 = 5.0; // only signal swaps > 5 SOL
-const DEBOUNCE_SECS: f64 = 2.0;
+const MIN_SOL_EQUIVALENT: f64 = 1.0; // signal swaps > 1 SOL (micro-cap sensitive)
+const DEBOUNCE_SECS: f64 = 3.0; // slightly longer debounce to conserve API budget
 
 fn is_sol_or_stable(mint: &str) -> bool {
     mint == WSOL_MINT || mint == USDC_MINT || mint == USDT_MINT

@@ -57,8 +57,8 @@ struct Args {
     #[arg(long)]
     no_forge: bool,
 
-    /// Minimum SOL value for forge swap signals to trigger scans
-    #[arg(long, default_value = "10")]
+    /// Minimum SOL value for forge swap signals to trigger scans (lower = more micro-cap sensitive)
+    #[arg(long, default_value = "2")]
     min_signal_sol: f64,
 
     /// Whale wallet addresses to prioritize (comma-separated)
@@ -98,25 +98,23 @@ async fn main() -> Result<()> {
     arb_store::run_migrations(&pool).await?;
     info!("Database ready");
 
-    // Build watch list from defaults + user-specified
-    let default_tokens = arb_types::default_watch_mints();
-    let mut watch_mints: Vec<String> = Vec::new();
-    let mut token_labels: Vec<(String, String)> = Vec::new(); // (mint, symbol) for scanner
+    // Micro-cap focused: no default large-cap watchlist.
+    // Tokens are discovered dynamically via DexScreener discovery + forge stream.
+    let watch_mints: Vec<String> = args.watch.clone();
+    let token_labels: Vec<(String, String)> = watch_mints.iter()
+        .map(|m| (m.clone(), format!("{}..{}", &m[..4], &m[m.len()-4..])))
+        .collect();
 
-    for (mint, symbol) in &default_tokens {
-        watch_mints.push(mint.to_string());
-        token_labels.push((mint.to_string(), symbol.to_string()));
-    }
-    for mint in &args.watch {
-        if !watch_mints.contains(mint) {
-            watch_mints.push(mint.clone());
-            token_labels.push((mint.clone(), format!("{}..{}", &mint[..4], &mint[mint.len()-4..])));
+    // Shared list of discovered micro-cap tokens (discovery loop populates this)
+    let discovered_tokens: Arc<RwLock<Vec<(String, String)>>> = Arc::new(RwLock::new(token_labels.clone()));
+
+    if watch_mints.is_empty() {
+        info!("Micro-cap mode: no static watchlist. Tokens discovered dynamically.");
+    } else {
+        info!("Watching {} user-specified tokens", watch_mints.len());
+        for (mint, symbol) in &token_labels {
+            info!("  {} ({})", symbol, &mint[..8]);
         }
-    }
-
-    info!("Watching {} tokens", watch_mints.len());
-    for (mint, symbol) in &token_labels {
-        info!("  {} ({})", symbol, &mint[..8]);
     }
 
     // Register symbols in detector
@@ -142,19 +140,24 @@ async fn main() -> Result<()> {
             .expect("API server crashed");
     });
 
-    // Start HTTP price poller (clone tx before moving to poller)
-    let poll_tx = quote_tx.clone();
-    let poll_mints = watch_mints.clone();
-    let poll_interval = args.poll_interval;
+    // Only start HTTP price poller if user specified tokens via --watch
     let min_liquidity = args.min_liquidity;
-    tokio::spawn(async move {
-        if let Err(e) =
-            arb_feed::poller::run_poll_loop(poll_mints, poll_interval, min_liquidity, poll_tx)
-                .await
-        {
-            error!("Poller crashed: {}", e);
-        }
-    });
+    if !watch_mints.is_empty() {
+        let poll_tx = quote_tx.clone();
+        let poll_mints = watch_mints.clone();
+        let poll_interval = args.poll_interval;
+        tokio::spawn(async move {
+            if let Err(e) =
+                arb_feed::poller::run_poll_loop(poll_mints, poll_interval, min_liquidity, poll_tx)
+                    .await
+            {
+                error!("Poller crashed: {}", e);
+            }
+        });
+        info!("HTTP poller enabled for {} user-specified tokens", watch_mints.len());
+    } else {
+        info!("HTTP poller disabled (micro-cap mode: forge + discovery only)");
+    }
 
     // SOL/USD price tracker (shared across WebSocket monitor + simulator)
     let sol_usd_price = Arc::new(RwLock::new(0.0));
@@ -246,74 +249,73 @@ async fn main() -> Result<()> {
         info!("No HELIUS_API_KEY provided, running HTTP polling only");
     }
 
-    // Start profitability scanner (periodic round-trip checks only, no triangular)
+    // Periodic scanner: scans discovered micro-cap tokens (populated by discovery loop)
     let scanner = arb_sim::ProfitScanner::new(sol_usd_price.clone());
     let scan_pool = pool.clone();
-    let scan_tokens: Vec<(String, String)> = token_labels.clone();
+    let scan_discovered = discovered_tokens.clone();
     tokio::spawn(async move {
-        // Wait for SOL price to be available
-        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        // Wait for discovery to populate some tokens
+        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
 
         let mut scan_cycle: u64 = 0;
         loop {
-            scan_cycle += 1;
-            info!("--- SCAN CYCLE #{} ({} tokens, round-trip only) ---", scan_cycle, scan_tokens.len());
-
-            let mut results = Vec::new();
-            for (mint, symbol) in &scan_tokens {
-                match scanner.scan_round_trip(mint, symbol).await {
-                    Ok(r) => results.push(r),
-                    Err(e) => warn!("Round-trip scan failed for {}: {}", symbol, e),
-                }
+            let tokens = scan_discovered.read().await.clone();
+            if tokens.is_empty() {
+                info!("SCAN: no discovered tokens yet, waiting...");
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                continue;
             }
 
+            scan_cycle += 1;
+            info!("--- SCAN CYCLE #{} ({} micro-cap tokens) ---", scan_cycle, tokens.len());
+
             let mut profitable_count = 0;
-            for r in &results {
-                let sol_usd = *scanner.sol_usd_price.read().await;
-                let net_sol = r.net_profit_lamports as f64 / 1e9;
-                let net_usd = net_sol * sol_usd;
-                let tag = if r.profitable { "*** PROFIT ***" } else { "loss" };
+            let mut total_count = 0;
+            for (mint, symbol) in &tokens {
+                match scanner.scan_round_trip(mint, symbol).await {
+                    Ok(r) => {
+                        total_count += 1;
+                        let sol_usd = *scanner.sol_usd_price.read().await;
+                        let net_sol = r.net_profit_lamports as f64 / 1e9;
+                        let net_usd = net_sol * sol_usd;
 
-                if r.profitable {
-                    profitable_count += 1;
-                }
-
-                info!(
-                    "SCAN {} {} {} | {:.4} SOL in -> {:.4} SOL out | {:.1} bps | {} {:.6} SOL (${:.4}) | {}",
-                    r.scan_type,
-                    tag,
-                    r.token_symbol,
-                    r.input_lamports as f64 / 1e9,
-                    r.output_lamports as f64 / 1e9,
-                    r.profit_bps,
-                    if r.profitable { "+" } else { "" },
-                    net_sol,
-                    net_usd,
-                    r.route_description,
-                );
-
-                // Store profitable results
-                if r.profitable {
-                    let sim = r.to_sim_result();
-                    arb_store::queries::insert_simulation(&scan_pool, &sim).await.ok();
+                        if r.profitable {
+                            profitable_count += 1;
+                            info!(
+                                "SCAN *** PROFIT *** {} | {:.4} SOL -> {:.4} SOL | {:.1} bps | +{:.6} SOL (${:.4}) | {}",
+                                r.token_symbol,
+                                r.input_lamports as f64 / 1e9,
+                                r.output_lamports as f64 / 1e9,
+                                r.profit_bps,
+                                net_sol,
+                                net_usd,
+                                r.route_description,
+                            );
+                            let sim = r.to_sim_result();
+                            arb_store::queries::insert_simulation(&scan_pool, &sim).await.ok();
+                        }
+                    }
+                    Err(e) => warn!("Scan failed for {}: {}", symbol, e),
                 }
             }
 
             info!(
                 "--- SCAN CYCLE #{} complete: {}/{} profitable ---",
-                scan_cycle, profitable_count, results.len()
+                scan_cycle, profitable_count, total_count
             );
 
-            // Wait between scan cycles (forge handles real-time, this is supplemental)
-            tokio::time::sleep(std::time::Duration::from_secs(120)).await;
+            // Scan every 3 minutes (API budget shared with forge-triggered scans)
+            tokio::time::sleep(std::time::Duration::from_secs(180)).await;
         }
     });
 
     // Micro-cap token discovery loop
+    // Discovers new tokens, runs safety checks, adds safe ones to the shared scan list
     let disc_scanner = arb_sim::ProfitScanner::new(sol_usd_price.clone());
     let disc_store = pool.clone();
     let disc_rpc = helius_api_key.as_ref().map(|k| format!("https://mainnet.helius-rpc.com/?api-key={k}"));
     let disc_known: std::collections::HashSet<String> = watch_mints.iter().cloned().collect();
+    let disc_discovered = discovered_tokens.clone();
     tokio::spawn(async move {
         // Wait for system to stabilize
         tokio::time::sleep(std::time::Duration::from_secs(10)).await;
@@ -324,48 +326,59 @@ async fn main() -> Result<()> {
 
             match arb_feed::discovery::discover_new_tokens(
                 &known,
-                5000.0,  // min $5K liquidity
+                5000.0,  // min $5K liquidity (too low = scam, too high = no edge)
                 disc_rpc.as_deref(),
             ).await {
                 Ok(tokens) => {
+                    // Filter: safe + liquidity under $200K (micro-cap sweet spot)
                     let safe_tokens: Vec<_> = tokens.into_iter()
-                        .filter(|t| t.safe)
+                        .filter(|t| t.safe && t.liquidity_usd < 200_000.0)
                         .collect();
+
+                    info!("DISCOVERY: {} safe micro-cap tokens found", safe_tokens.len());
 
                     for token in &safe_tokens {
                         known.insert(token.mint.clone());
 
-                        // Run round-trip scan on each safe micro-cap
+                        // Add to shared discovered list for periodic scanner
+                        {
+                            let mut list = disc_discovered.write().await;
+                            if !list.iter().any(|(m, _)| m == &token.mint) {
+                                list.push((token.mint.clone(), token.symbol.clone()));
+                                // Cap at 50 tokens to keep scan cycles manageable
+                                if list.len() > 50 {
+                                    list.remove(0); // drop oldest
+                                }
+                            }
+                        }
+
+                        // Initial round-trip scan on discovery
                         match disc_scanner.scan_round_trip(&token.mint, &token.symbol).await {
                             Ok(r) => {
                                 let sol_usd = *disc_scanner.sol_usd_price.read().await;
                                 let net_sol = r.net_profit_lamports as f64 / 1e9;
-                                let tag = if r.profitable { "*** MICRO PROFIT ***" } else { "micro-loss" };
-                                info!(
-                                    "MICRO {} {} | {:.1} bps | {:.6} SOL (${:.4}) | liq: ${:.0} | {}",
-                                    tag, r.token_symbol, r.profit_bps, net_sol, net_sol * sol_usd,
-                                    token.liquidity_usd, r.route_description,
-                                );
 
                                 if r.profitable {
+                                    info!(
+                                        "DISCOVERY *** PROFIT *** {} | {:.1} bps | +{:.6} SOL (${:.4}) | liq: ${:.0} | {}",
+                                        r.token_symbol, r.profit_bps, net_sol, net_sol * sol_usd,
+                                        token.liquidity_usd, r.route_description,
+                                    );
                                     let sim = r.to_sim_result();
                                     arb_store::queries::insert_simulation(&disc_store, &sim).await.ok();
                                 }
                             }
                             Err(e) => {
-                                warn!("Micro-cap scan failed for {}: {}", token.symbol, e);
+                                warn!("Discovery scan failed for {}: {}", token.symbol, e);
                             }
                         }
-
-                        // Rate limit between scans
-                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                     }
                 }
                 Err(e) => warn!("Discovery loop error: {}", e),
             }
 
-            // Run discovery every 5 minutes (RugCheck + DexScreener API budget)
-            tokio::time::sleep(std::time::Duration::from_secs(300)).await;
+            // Run discovery every 3 minutes (core pipeline for finding new opportunities)
+            tokio::time::sleep(std::time::Duration::from_secs(180)).await;
         }
     });
 
@@ -466,12 +479,14 @@ async fn main() -> Result<()> {
                         let trig_pool = store_pool.clone();
                         let trig_signal = signal.clone();
 
+                        let signal_sol = req.sol_equivalent;
                         tokio::spawn(async move {
                             match trig_scanner.scan_triggered(
                                 &req.token_mint,
                                 &symbol,
                                 req.trigger_dex,
                                 req.trigger_direction,
+                                signal_sol,
                             ).await {
                                 Ok(r) => {
                                     let profitable = r.profitable;

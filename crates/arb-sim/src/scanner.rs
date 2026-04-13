@@ -222,7 +222,14 @@ impl ProfitScanner {
         token_symbol: &str,
         trigger_dex: Dex,
         trigger_direction: SwapDirection,
+        signal_sol: f64,
     ) -> Result<ScanResult> {
+        // Dynamic trade size: use 20% of the triggering swap's SOL value,
+        // clamped to 0.1-2 SOL range. Larger swaps create bigger dislocations.
+        let dynamic_size = (signal_sol * 0.2)
+            .max(0.1)  // min 0.1 SOL
+            .min(2.0); // max 2 SOL
+        let trade_lamports = (dynamic_size * 1e9) as u64;
         let alternative_dexes = [Dex::Raydium, Dex::Orca, Dex::Meteora];
 
         // Determine which DEX to buy on and which to try selling on
@@ -259,7 +266,7 @@ impl ProfitScanner {
 
             // Leg 1: SOL -> TOKEN (restricted to buy venue)
             let leg1 = match self.quote_client
-                .get_quote(WSOL_MINT, token_mint, self.trade_size_lamports, self.slippage_bps, leg1_restrict)
+                .get_quote(WSOL_MINT, token_mint, trade_lamports, self.slippage_bps, leg1_restrict)
                 .await
             {
                 Ok(q) => q,
@@ -293,7 +300,7 @@ impl ProfitScanner {
 
             let realistic_output = apply_execution_penalty(leg2_out);
 
-            let input = self.trade_size_lamports as i64;
+            let input = trade_lamports as i64;
             let output = realistic_output as i64;
             let gross = output - input;
             let net = gross - ROUND_TRIP_TX_COST;
@@ -303,7 +310,7 @@ impl ProfitScanner {
                 scan_type: ScanType::RoundTrip,
                 token_symbol: token_symbol.to_string(),
                 token_mint: token_mint.to_string(),
-                input_lamports: self.trade_size_lamports,
+                input_lamports: trade_lamports,
                 output_lamports: realistic_output,
                 gross_profit_lamports: gross,
                 net_profit_lamports: net,
