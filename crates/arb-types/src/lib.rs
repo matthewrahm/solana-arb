@@ -5,8 +5,29 @@ use uuid::Uuid;
 // ── Token Constants ──
 
 pub const BONK_MINT: &str = "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263";
+pub const WIF_MINT: &str = "EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm";
+pub const POPCAT_MINT: &str = "7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr";
+pub const MEW_MINT: &str = "MEW1gQWJ3nEXg2qgERiKu7FAFj79PHvQVREQUzScPP5";
+pub const FARTCOIN_MINT: &str = "9BB6NFEcjBCtnNLFko2FqVQBq8HHM13kCyYcdQbgpump";
 pub const WSOL_MINT: &str = "So11111111111111111111111111111111111111112";
 pub const USDC_MINT: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+pub const USDT_MINT: &str = "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB";
+
+/// Default watchlist of volatile Solana memecoins with good volume
+pub fn default_watch_mints() -> Vec<(&'static str, &'static str)> {
+    vec![
+        (BONK_MINT, "BONK"),
+        (WIF_MINT, "WIF"),
+        (POPCAT_MINT, "POPCAT"),
+        (MEW_MINT, "MEW"),
+        (FARTCOIN_MINT, "FARTCOIN"),
+    ]
+}
+
+/// Stablecoins used as intermediaries in triangular arb
+pub fn stablecoin_mints() -> Vec<&'static str> {
+    vec![USDC_MINT, USDT_MINT]
+}
 
 // ── DEX Program IDs ──
 

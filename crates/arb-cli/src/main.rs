@@ -6,7 +6,7 @@ use tokio::sync::{mpsc, RwLock};
 use tracing::{error, info};
 
 use arb_detect::detector::Detector;
-use arb_types::{GraduationEvent, PriceQuote, BONK_MINT, WSOL_MINT};
+use arb_types::{GraduationEvent, PriceQuote, WSOL_MINT};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -76,29 +76,31 @@ async fn main() -> Result<()> {
     arb_store::run_migrations(&pool).await?;
     info!("Database ready");
 
-    // Build watch list
-    let mut watch_mints = vec![BONK_MINT.to_string()];
+    // Build watch list from defaults + user-specified
+    let default_tokens = arb_types::default_watch_mints();
+    let mut watch_mints: Vec<String> = Vec::new();
+    let mut token_labels: Vec<(String, String)> = Vec::new(); // (mint, symbol) for scanner
+
+    for (mint, symbol) in &default_tokens {
+        watch_mints.push(mint.to_string());
+        token_labels.push((mint.to_string(), symbol.to_string()));
+    }
     for mint in &args.watch {
         if !watch_mints.contains(mint) {
             watch_mints.push(mint.clone());
+            token_labels.push((mint.clone(), format!("{}..{}", &mint[..4], &mint[mint.len()-4..])));
         }
     }
 
     info!("Watching {} tokens", watch_mints.len());
-    for mint in &watch_mints {
-        info!("  {}", mint);
+    for (mint, symbol) in &token_labels {
+        info!("  {} ({})", symbol, &mint[..8]);
     }
 
-    // Resolve token symbols
-    let dex_client = arb_feed::dexscreener::DexScreenerClient::new();
+    // Register symbols in detector
     let mut detector = Detector::new(args.min_spread, 30);
-
-    for mint in &watch_mints {
-        if mint == BONK_MINT {
-            detector.register_symbol(mint, "BONK");
-        } else if let Ok(Some(symbol)) = dex_client.get_token_symbol(mint).await {
-            detector.register_symbol(mint, &symbol);
-        }
+    for (mint, symbol) in &token_labels {
+        detector.register_symbol(mint, symbol);
     }
 
     // Channel for price quotes (shared between HTTP poller and WebSocket monitor)
@@ -201,6 +203,73 @@ async fn main() -> Result<()> {
         info!("No HELIUS_API_KEY provided, running HTTP polling only");
     }
 
+    // Start profitability scanner (periodic round-trip + triangular arb checks)
+    let scanner = arb_sim::ProfitScanner::new(sol_usd_price.clone());
+    let scan_pool = pool.clone();
+    let scan_tokens: Vec<(String, String)> = token_labels.clone();
+    tokio::spawn(async move {
+        // Wait for SOL price to be available
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
+        let stables: Vec<(&str, &str)> = vec![
+            (arb_types::USDC_MINT, "USDC"),
+            (arb_types::USDT_MINT, "USDT"),
+        ];
+
+        let mut scan_cycle: u64 = 0;
+        loop {
+            scan_cycle += 1;
+            info!("--- SCAN CYCLE #{} ({} tokens, {} stables) ---", scan_cycle, scan_tokens.len(), stables.len());
+
+            let tokens_ref: Vec<(&str, &str)> = scan_tokens
+                .iter()
+                .map(|(m, s)| (m.as_str(), s.as_str()))
+                .collect();
+
+            let results = scanner.run_full_scan(&tokens_ref, &stables).await;
+
+            let mut profitable_count = 0;
+            for r in &results {
+                let sol_usd = *scanner.sol_usd_price.read().await;
+                let net_sol = r.net_profit_lamports as f64 / 1e9;
+                let net_usd = net_sol * sol_usd;
+                let tag = if r.profitable { "*** PROFIT ***" } else { "loss" };
+
+                if r.profitable {
+                    profitable_count += 1;
+                }
+
+                info!(
+                    "SCAN {} {} {} | {:.4} SOL in -> {:.4} SOL out | {:.1} bps | {} {:.6} SOL (${:.4}) | {}",
+                    r.scan_type,
+                    tag,
+                    r.token_symbol,
+                    r.input_lamports as f64 / 1e9,
+                    r.output_lamports as f64 / 1e9,
+                    r.profit_bps,
+                    if r.profitable { "+" } else { "" },
+                    net_sol,
+                    net_usd,
+                    r.route_description,
+                );
+
+                // Store profitable results
+                if r.profitable {
+                    let sim = r.to_sim_result();
+                    arb_store::queries::insert_simulation(&scan_pool, &sim).await.ok();
+                }
+            }
+
+            info!(
+                "--- SCAN CYCLE #{} complete: {}/{} profitable ---",
+                scan_cycle, profitable_count, results.len()
+            );
+
+            // Wait between scan cycles (rate limit friendly)
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        }
+    });
+
     // Drop the original sender so channel closes when all senders are dropped
     drop(quote_tx);
 
@@ -244,6 +313,7 @@ async fn main() -> Result<()> {
         let (opp, delta) = detector.process(quote);
 
         // Log significant price moves (delta detection)
+        // On WebSocket deltas, immediately run a round-trip profitability check
         if let Some(d) = delta {
             let direction = if d.delta_bps > 0.0 { "UP" } else { "DOWN" };
             info!(
@@ -255,6 +325,33 @@ async fn main() -> Result<()> {
                 d.old_price,
                 d.new_price,
             );
+
+            // Trigger immediate round-trip scan on WebSocket deltas
+            if d.source == arb_types::PriceSource::WebSocket {
+                let delta_scanner = arb_sim::ProfitScanner::new(sol_usd_price.clone());
+                let delta_mint = d.base_mint.clone();
+                let delta_symbol = detector.symbols.get(&d.base_mint)
+                    .cloned().unwrap_or_else(|| d.base_mint[..8].to_string());
+                let delta_pool = store_pool.clone();
+                tokio::spawn(async move {
+                    match delta_scanner.scan_round_trip(&delta_mint, &delta_symbol).await {
+                        Ok(r) if r.profitable => {
+                            let sol_usd = *delta_scanner.sol_usd_price.read().await;
+                            info!(
+                                "DELTA-TRIGGERED PROFIT {} | {:.6} SOL (${:.4}) | {}",
+                                r.token_symbol,
+                                r.net_profit_lamports as f64 / 1e9,
+                                r.net_profit_lamports as f64 / 1e9 * sol_usd,
+                                r.route_description,
+                            );
+                            let sim = r.to_sim_result();
+                            arb_store::queries::insert_simulation(&delta_pool, &sim).await.ok();
+                        }
+                        Ok(_) => {} // not profitable, silent
+                        Err(_) => {} // quote failed, silent
+                    }
+                });
+            }
         }
 
         if let Some(opp) = opp {

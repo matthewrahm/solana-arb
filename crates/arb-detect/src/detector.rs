@@ -34,7 +34,7 @@ pub struct Detector {
     /// Last emitted spread per pair key
     last_spreads: HashMap<String, LastSpread>,
     /// Cache token symbols for logging (mint -> symbol)
-    symbols: HashMap<String, String>,
+    pub symbols: HashMap<String, String>,
 }
 
 impl Detector {
