@@ -1,3 +1,4 @@
+pub mod atomic;
 pub mod jupiter_quote;
 pub mod scanner;
 pub mod simulator;

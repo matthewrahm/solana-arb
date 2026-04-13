@@ -208,6 +208,62 @@ impl ProfitScanner {
     }
 }
 
+impl ProfitScanner {
+    /// Graduation sniper: repeatedly scan a just-graduated token for 60 seconds.
+    /// The idea: right after PumpFun migration, the new pool may be mispriced
+    /// relative to Jupiter's optimal routing for 10-30 seconds.
+    pub async fn snipe_graduation(&self, token_mint: &str, token_symbol: &str) -> Vec<ScanResult> {
+        let mut results = Vec::new();
+        let start = std::time::Instant::now();
+        let max_duration = std::time::Duration::from_secs(60);
+        let check_interval = std::time::Duration::from_secs(5);
+        let mut attempt = 0;
+
+        tracing::info!("SNIPER: starting graduation scan for {} ({})", token_symbol, &token_mint[..8]);
+
+        // Wait a few seconds for the new pool to initialize
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
+        while start.elapsed() < max_duration {
+            attempt += 1;
+
+            match self.scan_round_trip(token_mint, token_symbol).await {
+                Ok(r) => {
+                    let net_sol = r.net_profit_lamports as f64 / 1e9;
+                    let sol_usd = *self.sol_usd_price.read().await;
+
+                    if r.profitable {
+                        tracing::info!(
+                            "SNIPER *** PROFIT *** {} attempt #{} | +{:.6} SOL (${:.4}) | {}",
+                            token_symbol, attempt, net_sol, net_sol * sol_usd, r.route_description
+                        );
+                    } else {
+                        tracing::info!(
+                            "SNIPER {} attempt #{} | {:.6} SOL (${:.4}) | {:.1} bps | {}",
+                            token_symbol, attempt, net_sol, net_sol * sol_usd, r.profit_bps, r.route_description
+                        );
+                    }
+
+                    results.push(r);
+                }
+                Err(e) => {
+                    tracing::warn!("SNIPER {} attempt #{} failed: {}", token_symbol, attempt, e);
+                }
+            }
+
+            tokio::time::sleep(check_interval).await;
+        }
+
+        let profitable = results.iter().filter(|r| r.profitable).count();
+        tracing::info!(
+            "SNIPER: {} scan complete. {} attempts, {} profitable",
+            token_symbol, results.len(), profitable
+        );
+
+        results
+    }
+}
+
 impl ScanResult {
     /// Convert to SimResult for database storage
     pub fn to_sim_result(&self) -> SimResult {

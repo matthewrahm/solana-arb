@@ -3,7 +3,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use clap::Parser;
 use tokio::sync::{mpsc, RwLock};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use arb_detect::detector::Detector;
 use arb_types::{GraduationEvent, PriceQuote, WSOL_MINT};
@@ -185,15 +185,36 @@ async fn main() -> Result<()> {
                 }
             });
 
-            // Graduation handler
+            // Graduation handler with sniper
+            let grad_scanner = arb_sim::ProfitScanner::new(sol_usd_price.clone());
+            let grad_store = pool.clone();
             tokio::spawn(async move {
                 while let Some(event) = grad_rx.recv().await {
                     info!(
-                        "GRADUATION: {} (curve {}) at {}",
+                        "GRADUATION: {} (curve {}) at {} -- LAUNCHING SNIPER",
                         &event.base_mint[..8],
                         &event.bonding_curve_address[..8],
                         event.graduated_at
                     );
+
+                    let sniper = grad_scanner.clone();
+                    let mint = event.base_mint.clone();
+                    let symbol = if event.token_symbol.is_empty() {
+                        format!("{}..{}", &event.base_mint[..4], &event.base_mint[event.base_mint.len()-4..])
+                    } else {
+                        event.token_symbol.clone()
+                    };
+                    let snipe_pool = grad_store.clone();
+
+                    tokio::spawn(async move {
+                        let results = sniper.snipe_graduation(&mint, &symbol).await;
+                        for r in results {
+                            if r.profitable {
+                                let sim = r.to_sim_result();
+                                arb_store::queries::insert_simulation(&snipe_pool, &sim).await.ok();
+                            }
+                        }
+                    });
                 }
             });
 
@@ -267,6 +288,66 @@ async fn main() -> Result<()> {
 
             // Wait between scan cycles (rate limit friendly)
             tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        }
+    });
+
+    // Micro-cap token discovery loop
+    let disc_scanner = arb_sim::ProfitScanner::new(sol_usd_price.clone());
+    let disc_store = pool.clone();
+    let disc_rpc = helius_api_key.as_ref().map(|k| format!("https://mainnet.helius-rpc.com/?api-key={k}"));
+    let disc_known: std::collections::HashSet<String> = watch_mints.iter().cloned().collect();
+    tokio::spawn(async move {
+        // Wait for system to stabilize
+        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+
+        let mut known = disc_known;
+        loop {
+            info!("--- DISCOVERY: scanning for new micro-cap tokens ---");
+
+            match arb_feed::discovery::discover_new_tokens(
+                &known,
+                5000.0,  // min $5K liquidity
+                disc_rpc.as_deref(),
+            ).await {
+                Ok(tokens) => {
+                    let safe_tokens: Vec<_> = tokens.into_iter()
+                        .filter(|t| t.safe)
+                        .collect();
+
+                    for token in &safe_tokens {
+                        known.insert(token.mint.clone());
+
+                        // Run round-trip scan on each safe micro-cap
+                        match disc_scanner.scan_round_trip(&token.mint, &token.symbol).await {
+                            Ok(r) => {
+                                let sol_usd = *disc_scanner.sol_usd_price.read().await;
+                                let net_sol = r.net_profit_lamports as f64 / 1e9;
+                                let tag = if r.profitable { "*** MICRO PROFIT ***" } else { "micro-loss" };
+                                info!(
+                                    "MICRO {} {} | {:.1} bps | {:.6} SOL (${:.4}) | liq: ${:.0} | {}",
+                                    tag, r.token_symbol, r.profit_bps, net_sol, net_sol * sol_usd,
+                                    token.liquidity_usd, r.route_description,
+                                );
+
+                                if r.profitable {
+                                    let sim = r.to_sim_result();
+                                    arb_store::queries::insert_simulation(&disc_store, &sim).await.ok();
+                                }
+                            }
+                            Err(e) => {
+                                warn!("Micro-cap scan failed for {}: {}", token.symbol, e);
+                            }
+                        }
+
+                        // Rate limit between scans
+                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    }
+                }
+                Err(e) => warn!("Discovery loop error: {}", e),
+            }
+
+            // Run discovery every 2 minutes
+            tokio::time::sleep(std::time::Duration::from_secs(120)).await;
         }
     });
 

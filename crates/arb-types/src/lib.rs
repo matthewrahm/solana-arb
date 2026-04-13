@@ -52,6 +52,7 @@ pub enum Dex {
     Jupiter,
     Meteora,
     PumpFun,
+    PumpSwap,
     Unknown,
 }
 
@@ -63,6 +64,7 @@ impl Dex {
             Dex::Jupiter => "jupiter",
             Dex::Meteora => "meteora",
             Dex::PumpFun => "pumpfun",
+            Dex::PumpSwap => "pumpswap",
             Dex::Unknown => "unknown",
         }
     }
@@ -75,6 +77,7 @@ impl Dex {
             "jupiter" => Dex::Jupiter,
             "meteora" => Dex::Meteora,
             "pumpfun" => Dex::PumpFun,
+            "pumpswap" => Dex::PumpSwap,
             _ => Dex::Unknown,
         }
     }
@@ -85,7 +88,8 @@ impl Dex {
             Dex::Raydium => 25.0,
             Dex::Orca => 25.0,
             Dex::Meteora => 30.0,
-            Dex::PumpFun => 100.0, // 1% fee
+            Dex::PumpFun => 100.0,  // 1% fee
+            Dex::PumpSwap => 25.0,  // 0.25% fee (standard AMM)
             _ => DEFAULT_SWAP_FEE_BPS,
         }
     }
