@@ -1,0 +1,23 @@
+[package]
+name = "arb-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "solana-arb"
+path = "src/main.rs"
+
+[dependencies]
+arb-types = { path = "../arb-types" }
+arb-feed = { path = "../arb-feed" }
+arb-detect = { path = "../arb-detect" }
+arb-store = { path = "../arb-store" }
+arb-api = { path = "../arb-api" }
+tokio = { workspace = true }
+axum = { workspace = true }
+clap = { workspace = true }
+dotenvy = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
