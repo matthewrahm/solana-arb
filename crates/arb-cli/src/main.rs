@@ -132,31 +132,35 @@ async fn main() -> Result<()> {
         }
     });
 
+    // SOL/USD price tracker (shared across WebSocket monitor + simulator)
+    let sol_usd_price = Arc::new(RwLock::new(0.0));
+
+    // Background: update SOL/USD every 30s
+    let sol_price_ref = sol_usd_price.clone();
+    tokio::spawn(async move {
+        let jup = arb_feed::jupiter::JupiterClient::new();
+        loop {
+            match jup.get_price(WSOL_MINT).await {
+                Ok(price) if price > 0.0 => {
+                    *sol_price_ref.write().await = price;
+                    info!("SOL/USD: ${:.2}", price);
+                }
+                Ok(_) => {}
+                Err(e) => error!("SOL/USD fetch failed: {}", e),
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        }
+    });
+
+    // Wait for initial SOL price
+    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+
+    // Create simulator for paper trading
+    let simulator = arb_sim::Simulator::new(sol_usd_price.clone());
+
     // Start WebSocket pool monitor (if API key provided and not disabled)
     if let Some(ref api_key) = helius_api_key {
         if !args.no_ws {
-            // SOL/USD price tracker (shared with WebSocket monitor)
-            let sol_usd_price = Arc::new(RwLock::new(0.0));
-
-            // Background: update SOL/USD every 30s
-            let sol_price_ref = sol_usd_price.clone();
-            tokio::spawn(async move {
-                let jup = arb_feed::jupiter::JupiterClient::new();
-                loop {
-                    match jup.get_price(WSOL_MINT).await {
-                        Ok(price) if price > 0.0 => {
-                            *sol_price_ref.write().await = price;
-                            info!("SOL/USD: ${:.2}", price);
-                        }
-                        Ok(_) => {}
-                        Err(e) => error!("SOL/USD fetch failed: {}", e),
-                    }
-                    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
-                }
-            });
-
-            // Wait for initial SOL price
-            tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
 
             // Graduation event channel
             let (grad_tx, mut grad_rx) = mpsc::channel::<GraduationEvent>(100);
@@ -256,6 +260,47 @@ async fn main() -> Result<()> {
             if let Err(e) = arb_store::queries::insert_opportunity(&store_pool, &opp).await {
                 error!("DB write failed (opp): {}", e);
             }
+
+            // Simulate in background (don't block the price feed loop)
+            let sim = simulator.clone();
+            let sim_pool = store_pool.clone();
+            let sim_sol_usd = sol_usd_price.clone();
+            let sim_opp = opp.clone();
+            tokio::spawn(async move {
+                match sim.simulate(&sim_opp).await {
+                    Ok(result) => {
+                        if result.simulation_success {
+                            let profit_sol = result.simulated_profit_lamports
+                                .map(|p| p as f64 / 1e9)
+                                .unwrap_or(0.0);
+                            let sol_usd = *sim_sol_usd.read().await;
+                            let profit_usd = profit_sol * sol_usd;
+                            let tag = if profit_sol > 0.0 { "PROFIT" } else { "LOSS" };
+                            info!(
+                                "SIM {} {} | {:.4} SOL in -> {:.4} SOL out | {:.6} SOL (${:.4})",
+                                tag,
+                                sim_opp.token_symbol,
+                                result.input_amount as f64 / 1e9,
+                                result.simulated_output.unwrap_or(0) as f64 / 1e9,
+                                profit_sol,
+                                profit_usd,
+                            );
+                        } else {
+                            info!(
+                                "SIM FAIL {} | {}",
+                                sim_opp.token_symbol,
+                                result.error_message.as_deref().unwrap_or("unknown error"),
+                            );
+                        }
+                        if let Err(e) = arb_store::queries::insert_simulation(&sim_pool, &result).await {
+                            error!("DB write failed (sim): {}", e);
+                        }
+                    }
+                    Err(e) => {
+                        error!("Simulation error for {}: {}", sim_opp.token_symbol, e);
+                    }
+                }
+            });
         }
 
         // Periodic stats

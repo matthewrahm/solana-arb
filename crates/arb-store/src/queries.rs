@@ -1,5 +1,5 @@
 use anyhow::Result;
-use arb_types::{ArbOpportunity, PriceQuote};
+use arb_types::{ArbOpportunity, PriceQuote, SimResult};
 use sqlx::PgPool;
 
 /// Insert a batch of price snapshots
@@ -94,6 +94,34 @@ pub async fn get_stats(pool: &PgPool) -> Result<StatsRow> {
     .fetch_one(pool)
     .await?;
     Ok(row)
+}
+
+/// Insert a simulation result
+pub async fn insert_simulation(pool: &PgPool, sim: &SimResult) -> Result<()> {
+    sqlx::query(
+        r#"
+        INSERT INTO simulations
+            (id, opportunity_id, input_amount, input_mint, simulated_output, output_mint,
+             simulated_profit_lamports, tx_fee_lamports, priority_fee_lamports,
+             simulation_success, error_message, simulated_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        "#,
+    )
+    .bind(sim.id)
+    .bind(sim.opportunity_id)
+    .bind(sim.input_amount)
+    .bind(&sim.input_mint)
+    .bind(sim.simulated_output)
+    .bind(&sim.output_mint)
+    .bind(sim.simulated_profit_lamports)
+    .bind(sim.tx_fee_lamports)
+    .bind(sim.priority_fee_lamports)
+    .bind(sim.simulation_success)
+    .bind(&sim.error_message)
+    .bind(sim.simulated_at)
+    .execute(pool)
+    .await?;
+    Ok(())
 }
 
 #[derive(sqlx::FromRow, serde::Serialize)]

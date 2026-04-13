@@ -12,3 +12,5 @@ serde_json = { workspace = true }
 reqwest = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }

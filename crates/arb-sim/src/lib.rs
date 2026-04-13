@@ -1,4 +1,4 @@
-// Phase 3: Transaction simulation (paper trading)
-// - Jupiter Quote + Swap API integration
-// - simulateTransaction RPC
-// - P&L calculation
+pub mod jupiter_quote;
+pub mod simulator;
+
+pub use simulator::Simulator;

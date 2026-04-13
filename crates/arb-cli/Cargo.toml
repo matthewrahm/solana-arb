@@ -14,6 +14,7 @@ arb-feed = { path = "../arb-feed" }
 arb-detect = { path = "../arb-detect" }
 arb-store = { path = "../arb-store" }
 arb-api = { path = "../arb-api" }
+arb-sim = { path = "../arb-sim" }
 tokio = { workspace = true }
 axum = { workspace = true }
 clap = { workspace = true }

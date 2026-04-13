@@ -105,6 +105,7 @@ dependencies = [
  "arb-api",
  "arb-detect",
  "arb-feed",
+ "arb-sim",
  "arb-store",
  "arb-types",
  "axum",
@@ -150,11 +151,13 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "arb-types",
+ "chrono",
  "reqwest",
  "serde",
  "serde_json",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

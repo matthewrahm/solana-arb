@@ -132,6 +132,24 @@ pub struct RaydiumVaults {
     pub pc_vault: String,
 }
 
+// ── Simulation Result ──
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SimResult {
+    pub id: Uuid,
+    pub opportunity_id: Uuid,
+    pub input_amount: i64,
+    pub input_mint: String,
+    pub simulated_output: Option<i64>,
+    pub output_mint: String,
+    pub simulated_profit_lamports: Option<i64>,
+    pub tx_fee_lamports: Option<i64>,
+    pub priority_fee_lamports: Option<i64>,
+    pub simulation_success: bool,
+    pub error_message: Option<String>,
+    pub simulated_at: DateTime<Utc>,
+}
+
 // ── Configuration ──
 
 #[derive(Debug, Clone)]
