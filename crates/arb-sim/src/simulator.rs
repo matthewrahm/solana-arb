@@ -91,10 +91,8 @@ impl Simulator {
             return Ok(self.failed_result(opp, "Leg 1 returned zero output"));
         }
 
-        // Brief pause to avoid Jupiter rate limits
-        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-
         // Leg 2: Sell base_mint for SOL, routed through sell_dex
+        // Rate limiting handled globally by JupiterQuoteClient
         let leg2 = match self
             .quote_client
             .get_quote(

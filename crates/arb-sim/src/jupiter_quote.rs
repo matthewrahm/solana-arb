@@ -1,8 +1,23 @@
 //! Jupiter V6 Quote API client for getting swap quotes.
+//! Uses a global rate limiter to prevent 429s across all concurrent systems.
+
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use arb_types::Dex;
 use serde::Deserialize;
+use tokio::sync::Semaphore;
+use tokio::time::{Duration, Instant};
+
+/// Global rate limiter: max 1 Jupiter request per 600ms (~1.6 req/s).
+/// Shared across ALL JupiterQuoteClient instances via static.
+static JUPITER_RATE_LIMIT_MS: u64 = 600;
+
+static GLOBAL_SEMAPHORE: std::sync::LazyLock<Arc<Semaphore>> =
+    std::sync::LazyLock::new(|| Arc::new(Semaphore::new(1)));
+
+static GLOBAL_LAST_REQUEST: std::sync::LazyLock<Arc<tokio::sync::Mutex<Option<Instant>>>> =
+    std::sync::LazyLock::new(|| Arc::new(tokio::sync::Mutex::new(None)));
 
 pub struct JupiterQuoteClient {
     client: reqwest::Client,
@@ -51,7 +66,23 @@ impl JupiterQuoteClient {
         }
     }
 
+    /// Enforce global rate limit: wait until at least JUPITER_RATE_LIMIT_MS since last request.
+    /// This is shared across ALL JupiterQuoteClient instances process-wide.
+    async fn rate_limit() {
+        let _permit = GLOBAL_SEMAPHORE.acquire().await.unwrap();
+        let mut last = GLOBAL_LAST_REQUEST.lock().await;
+        if let Some(prev) = *last {
+            let elapsed = prev.elapsed();
+            let min_gap = Duration::from_millis(JUPITER_RATE_LIMIT_MS);
+            if elapsed < min_gap {
+                tokio::time::sleep(min_gap - elapsed).await;
+            }
+        }
+        *last = Some(Instant::now());
+    }
+
     /// Get a swap quote from Jupiter, optionally restricted to a specific DEX.
+    /// Automatically rate-limited to prevent 429s.
     pub async fn get_quote(
         &self,
         input_mint: &str,
@@ -60,6 +91,9 @@ impl JupiterQuoteClient {
         slippage_bps: u16,
         restrict_dex: Option<Dex>,
     ) -> Result<QuoteResponse> {
+        // Enforce global rate limit before making the request
+        Self::rate_limit().await;
+
         let mut url = format!(
             "{}?inputMint={}&outputMint={}&amount={}&slippageBps={}",
             self.base_url, input_mint, output_mint, amount, slippage_bps

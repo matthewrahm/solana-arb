@@ -79,10 +79,8 @@ impl ProfitScanner {
         let leg1_route = JupiterQuoteClient::primary_route_label(&leg1)
             .unwrap_or("?").to_string();
 
-        // Pause for Jupiter rate limit
-        tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
-
         // Leg 2: TOKEN -> SOL (unrestricted routing)
+        // Rate limiting is handled globally by JupiterQuoteClient
         let leg2 = self.quote_client
             .get_quote(token_mint, WSOL_MINT, leg1_out, self.slippage_bps, None)
             .await?;
@@ -127,16 +125,12 @@ impl ProfitScanner {
         let leg1_out: u64 = leg1.out_amount.parse()?;
         if leg1_out == 0 { anyhow::bail!("Leg 1 zero"); }
 
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-
-        // Leg 2: TOKEN -> STABLE
+        // Leg 2: TOKEN -> STABLE (rate limiting handled by quote client)
         let leg2 = self.quote_client
             .get_quote(token_mint, stable_mint, leg1_out, self.slippage_bps, None)
             .await?;
         let leg2_out: u64 = leg2.out_amount.parse()?;
         if leg2_out == 0 { anyhow::bail!("Leg 2 zero"); }
-
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
         // Leg 3: STABLE -> SOL
         let leg3 = self.quote_client
@@ -190,17 +184,13 @@ impl ProfitScanner {
                 Err(e) => warn!("Round-trip scan failed for {}: {}", symbol, e),
             }
 
-            // Pause between tokens for rate limit
-            tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
-
             // Triangular scans via each stablecoin
+            // Rate limiting is handled globally by JupiterQuoteClient
             for (stable_mint, stable_symbol) in stablecoins {
                 match self.scan_triangular(mint, symbol, stable_mint, stable_symbol).await {
                     Ok(r) => results.push(r),
                     Err(e) => warn!("Tri-arb scan failed for {} via {}: {}", symbol, stable_symbol, e),
                 }
-
-                tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
             }
         }
 
@@ -253,10 +243,8 @@ impl ProfitScanner {
         let leg1_route = JupiterQuoteClient::primary_route_label(&leg1)
             .unwrap_or("?").to_string();
 
-        // Shorter delay for triggered scans (high priority)
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
         // Leg 2: TOKEN -> SOL (sell on more expensive venue)
+        // Rate limiting handled globally by JupiterQuoteClient
         let leg2 = self.quote_client
             .get_quote(token_mint, WSOL_MINT, leg1_out, self.slippage_bps, sell_restrict)
             .await;

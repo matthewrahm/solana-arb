@@ -29,8 +29,8 @@ struct Args {
     #[arg(short, long, default_value = "3002")]
     port: u16,
 
-    /// Price poll interval in seconds
-    #[arg(long, default_value = "5")]
+    /// Price poll interval in seconds (higher is fine when forge feed is active)
+    #[arg(long, default_value = "15")]
     poll_interval: u64,
 
     /// Minimum net spread in bps to flag an opportunity
@@ -308,8 +308,8 @@ async fn main() -> Result<()> {
                 scan_cycle, profitable_count, results.len()
             );
 
-            // Wait between scan cycles (rate limit friendly)
-            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            // Wait between scan cycles (forge handles real-time, this is supplemental)
+            tokio::time::sleep(std::time::Duration::from_secs(120)).await;
         }
     });
 
@@ -368,8 +368,8 @@ async fn main() -> Result<()> {
                 Err(e) => warn!("Discovery loop error: {}", e),
             }
 
-            // Run discovery every 2 minutes
-            tokio::time::sleep(std::time::Duration::from_secs(120)).await;
+            // Run discovery every 5 minutes (RugCheck + DexScreener API budget)
+            tokio::time::sleep(std::time::Duration::from_secs(300)).await;
         }
     });
 
