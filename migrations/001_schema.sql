@@ -31,7 +31,7 @@ CREATE TABLE IF NOT EXISTS arb_opportunities (
 
 CREATE TABLE IF NOT EXISTS simulations (
     id              UUID PRIMARY KEY,
-    opportunity_id  UUID REFERENCES arb_opportunities(id),
+    opportunity_id  UUID,
     input_amount    BIGINT NOT NULL,
     input_mint      VARCHAR(44) NOT NULL,
     simulated_output BIGINT,

@@ -292,9 +292,11 @@ async fn main() -> Result<()> {
                                 net_usd,
                                 r.route_description,
                             );
-                            let sim = r.to_sim_result();
-                            arb_store::queries::insert_simulation(&scan_pool, &sim).await.ok();
                         }
+
+                        // Store all scan results (profitable and not) for dashboard visibility
+                        let sim = r.to_sim_result();
+                        arb_store::queries::insert_simulation(&scan_pool, &sim).await.ok();
                     }
                     Err(e) => warn!("Scan failed for {}: {}", symbol, e),
                 }
@@ -365,9 +367,11 @@ async fn main() -> Result<()> {
                                         r.token_symbol, r.profit_bps, net_sol, net_sol * sol_usd,
                                         token.liquidity_usd, r.route_description,
                                     );
-                                    let sim = r.to_sim_result();
-                                    arb_store::queries::insert_simulation(&disc_store, &sim).await.ok();
                                 }
+
+                                // Store all discovery scans for dashboard visibility
+                                let sim = r.to_sim_result();
+                                arb_store::queries::insert_simulation(&disc_store, &sim).await.ok();
                             }
                             Err(e) => {
                                 warn!("Discovery scan failed for {}: {}", token.symbol, e);
@@ -506,16 +510,13 @@ async fn main() -> Result<()> {
                                         );
                                     }
 
-                                    // Store signal result
+                                    // Store signal + simulation result (all scans, not just profitable)
                                     arb_store::queries::insert_signal(
                                         &trig_pool, &trig_signal, true, Some(profitable),
                                     ).await.ok();
 
-                                    // Store simulation if profitable
-                                    if profitable {
-                                        let sim = r.to_sim_result();
-                                        arb_store::queries::insert_simulation(&trig_pool, &sim).await.ok();
-                                    }
+                                    let sim = r.to_sim_result();
+                                    arb_store::queries::insert_simulation(&trig_pool, &sim).await.ok();
                                 }
                                 Err(e) => {
                                     warn!("Triggered scan failed for {}: {}", symbol, e);
@@ -526,10 +527,13 @@ async fn main() -> Result<()> {
                             }
                         });
                     } else {
-                        // Signal received but not actionable
-                        arb_store::queries::insert_signal(
+                        // Signal received but not actionable -- store for dashboard
+                        info!("STORING signal {} (not actionable)", &signal.signature[..8.min(signal.signature.len())]);
+                        if let Err(e) = arb_store::queries::insert_signal(
                             &store_pool, &signal, false, None,
-                        ).await.ok();
+                        ).await {
+                            error!("DB insert_signal failed: {}", e);
+                        }
                     }
                 }
                 continue; // back to select!

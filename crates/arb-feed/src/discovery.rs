@@ -90,8 +90,15 @@ pub async fn discover_new_tokens(
                     .unwrap_or_else(|| format!("{}..{}", &token.token_address[..4], &token.token_address[token.token_address.len()-4..]));
 
                 // Safety check: RPC on-chain checks + RugCheck API
+                // If RPC fails (rate limited, parse error), fall back to RugCheck only
                 let (rpc_safe, rpc_note) = if let Some(rpc) = rpc_url {
-                    check_token_safety(rpc, &token.token_address).await
+                    let result = check_token_safety(rpc, &token.token_address).await;
+                    if result.1.starts_with("RPC error") {
+                        // RPC failed -- don't block on network errors, let RugCheck decide
+                        (true, "RPC unavailable, RugCheck only".to_string())
+                    } else {
+                        result
+                    }
                 } else {
                     (true, "no RPC".to_string())
                 };
