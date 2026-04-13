@@ -246,7 +246,7 @@ async fn main() -> Result<()> {
         info!("No HELIUS_API_KEY provided, running HTTP polling only");
     }
 
-    // Start profitability scanner (periodic round-trip + triangular arb checks)
+    // Start profitability scanner (periodic round-trip checks only, no triangular)
     let scanner = arb_sim::ProfitScanner::new(sol_usd_price.clone());
     let scan_pool = pool.clone();
     let scan_tokens: Vec<(String, String)> = token_labels.clone();
@@ -254,22 +254,18 @@ async fn main() -> Result<()> {
         // Wait for SOL price to be available
         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
 
-        let stables: Vec<(&str, &str)> = vec![
-            (arb_types::USDC_MINT, "USDC"),
-            (arb_types::USDT_MINT, "USDT"),
-        ];
-
         let mut scan_cycle: u64 = 0;
         loop {
             scan_cycle += 1;
-            info!("--- SCAN CYCLE #{} ({} tokens, {} stables) ---", scan_cycle, scan_tokens.len(), stables.len());
+            info!("--- SCAN CYCLE #{} ({} tokens, round-trip only) ---", scan_cycle, scan_tokens.len());
 
-            let tokens_ref: Vec<(&str, &str)> = scan_tokens
-                .iter()
-                .map(|(m, s)| (m.as_str(), s.as_str()))
-                .collect();
-
-            let results = scanner.run_full_scan(&tokens_ref, &stables).await;
+            let mut results = Vec::new();
+            for (mint, symbol) in &scan_tokens {
+                match scanner.scan_round_trip(mint, symbol).await {
+                    Ok(r) => results.push(r),
+                    Err(e) => warn!("Round-trip scan failed for {}: {}", symbol, e),
+                }
+            }
 
             let mut profitable_count = 0;
             for r in &results {
@@ -453,32 +449,8 @@ async fn main() -> Result<()> {
                         whale_tag,
                     );
 
-                    // Track volume for spike detection
-                    let is_hot = volume_tracker.record_swap(&signal.token_mint);
-                    if is_hot {
-                        // Volume spike detected -- trigger a round-trip scan
-                        let hot_scanner = arb_sim::ProfitScanner::new(sol_usd_price.clone());
-                        let hot_mint = signal.token_mint.clone();
-                        let hot_symbol = signal.token_symbol.clone()
-                            .unwrap_or_else(|| format!("{}..{}", &hot_mint[..4], &hot_mint[hot_mint.len()-4..]));
-                        let hot_pool = store_pool.clone();
-                        tokio::spawn(async move {
-                            match hot_scanner.scan_round_trip(&hot_mint, &hot_symbol).await {
-                                Ok(r) if r.profitable => {
-                                    let sol_usd = *hot_scanner.sol_usd_price.read().await;
-                                    let net_sol = r.net_profit_lamports as f64 / 1e9;
-                                    info!(
-                                        "VOLUME-SPIKE PROFIT {} | +{:.6} SOL (${:.4}) | {}",
-                                        hot_symbol, net_sol, net_sol * sol_usd, r.route_description,
-                                    );
-                                    let sim = r.to_sim_result();
-                                    arb_store::queries::insert_simulation(&hot_pool, &sim).await.ok();
-                                }
-                                Ok(_) => {} // not profitable
-                                Err(e) => warn!("Volume-spike scan failed for {}: {}", hot_symbol, e),
-                            }
-                        });
-                    }
+                    // Track volume for spike detection (flag only, no independent scan)
+                    volume_tracker.record_swap(&signal.token_mint);
 
                     // Periodic cleanup (every ~1000 signals)
                     if signal_count % 1000 == 0 {
@@ -589,32 +561,8 @@ async fn main() -> Result<()> {
                 d.new_price,
             );
 
-            // Trigger immediate round-trip scan on WebSocket deltas
-            if d.source == arb_types::PriceSource::WebSocket {
-                let delta_scanner = arb_sim::ProfitScanner::new(sol_usd_price.clone());
-                let delta_mint = d.base_mint.clone();
-                let delta_symbol = detector.symbols.get(&d.base_mint)
-                    .cloned().unwrap_or_else(|| d.base_mint[..8].to_string());
-                let delta_pool = store_pool.clone();
-                tokio::spawn(async move {
-                    match delta_scanner.scan_round_trip(&delta_mint, &delta_symbol).await {
-                        Ok(r) if r.profitable => {
-                            let sol_usd = *delta_scanner.sol_usd_price.read().await;
-                            info!(
-                                "DELTA-TRIGGERED PROFIT {} | {:.6} SOL (${:.4}) | {}",
-                                r.token_symbol,
-                                r.net_profit_lamports as f64 / 1e9,
-                                r.net_profit_lamports as f64 / 1e9 * sol_usd,
-                                r.route_description,
-                            );
-                            let sim = r.to_sim_result();
-                            arb_store::queries::insert_simulation(&delta_pool, &sim).await.ok();
-                        }
-                        Ok(_) => {} // not profitable, silent
-                        Err(_) => {} // quote failed, silent
-                    }
-                });
-            }
+            // Delta-triggered scanning removed: forge-triggered scanner handles
+            // real-time signals better with DEX-restricted routing on both legs.
         }
 
         if let Some(opp) = opp {

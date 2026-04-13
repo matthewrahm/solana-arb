@@ -13,7 +13,15 @@ use uuid::Uuid;
 use crate::jupiter_quote::JupiterQuoteClient;
 
 /// Estimated total tx cost for a round-trip (2 swaps)
-const ROUND_TRIP_TX_COST: i64 = 210_000; // 2 * (5000 base + 100000 priority)
+/// Realistic for mainnet during memecoin activity: 2 * (5000 base + 1,000,000 priority)
+const ROUND_TRIP_TX_COST: i64 = 2_010_000;
+
+/// Estimated total tx cost for a triangular arb (3 swaps)
+const TRI_TX_COST: i64 = 3_015_000;
+
+/// Execution penalty in bps applied to quote output to model real-world losses.
+/// 30 bps slippage (quotes are optimistic) + 20 bps MEV/sandwich cost = 50 bps.
+const EXECUTION_PENALTY_BPS: f64 = 50.0;
 
 /// Result of a profitability scan
 #[derive(Debug, Clone)]
@@ -57,7 +65,7 @@ impl ProfitScanner {
     pub fn new(sol_usd_price: Arc<RwLock<f64>>) -> Self {
         Self {
             quote_client: Arc::new(JupiterQuoteClient::new()),
-            trade_size_lamports: 10_000_000_000, // 10 SOL
+            trade_size_lamports: 1_000_000_000, // 1 SOL (realistic for micro-cap pools)
             slippage_bps: 50,
             sol_usd_price,
         }
@@ -90,8 +98,11 @@ impl ProfitScanner {
         let leg2_route = JupiterQuoteClient::primary_route_label(&leg2)
             .unwrap_or("?").to_string();
 
+        // Apply execution penalty: real execution always gets less than the quote
+        let realistic_output = apply_execution_penalty(leg2_out);
+
         let input = self.trade_size_lamports as i64;
-        let output = leg2_out as i64;
+        let output = realistic_output as i64;
         let gross = output - input;
         let net = gross - ROUND_TRIP_TX_COST;
         let profit_bps = (gross as f64 / input as f64) * 10_000.0;
@@ -101,7 +112,7 @@ impl ProfitScanner {
             token_symbol: token_symbol.to_string(),
             token_mint: token_mint.to_string(),
             input_lamports: self.trade_size_lamports,
-            output_lamports: leg2_out,
+            output_lamports: realistic_output,
             gross_profit_lamports: gross,
             net_profit_lamports: net,
             profit_bps,
@@ -138,13 +149,13 @@ impl ProfitScanner {
             .await?;
         let leg3_out: u64 = leg3.out_amount.parse()?;
 
-        // Cost is higher for 3-leg: 3 transactions
-        let tri_tx_cost: i64 = 315_000; // 3 * (5000 + 100000)
+        // Apply execution penalty to final output
+        let realistic_output = apply_execution_penalty(leg3_out);
 
         let input = self.trade_size_lamports as i64;
-        let output = leg3_out as i64;
+        let output = realistic_output as i64;
         let gross = output - input;
-        let net = gross - tri_tx_cost;
+        let net = gross - TRI_TX_COST;
         let profit_bps = (gross as f64 / input as f64) * 10_000.0;
 
         let l1 = JupiterQuoteClient::primary_route_label(&leg1).unwrap_or("?");
@@ -200,10 +211,11 @@ impl ProfitScanner {
 
 impl ProfitScanner {
     /// Swap-triggered scan: reacts to an on-chain swap signal by checking
-    /// cross-venue pricing with DEX-directed routing.
+    /// cross-venue pricing with DEX-restricted routing on BOTH legs.
     ///
-    /// Instead of unrestricted Jupiter routing (which optimizes away the spread),
-    /// this restricts each leg to specific venues based on the trigger signal.
+    /// Both legs must be DEX-restricted to find real cross-venue arbitrage.
+    /// If either leg is unrestricted, Jupiter optimizes the spread away.
+    /// Tries each alternative DEX as the counter-venue.
     pub async fn scan_triggered(
         &self,
         token_mint: &str,
@@ -211,97 +223,122 @@ impl ProfitScanner {
         trigger_dex: Dex,
         trigger_direction: SwapDirection,
     ) -> Result<ScanResult> {
-        // Strategy based on trigger direction:
-        // BUY on trigger_dex -> price UP there -> buy from others, sell on trigger
-        // SELL on trigger_dex -> price DOWN there -> buy on trigger, sell on others
-        let (buy_restrict, sell_restrict) = match trigger_direction {
-            SwapDirection::Buy => (None, Some(trigger_dex)),
-            SwapDirection::Sell => (Some(trigger_dex), None),
-        };
+        let alternative_dexes = [Dex::Raydium, Dex::Orca, Dex::Meteora];
 
-        // Leg 1: SOL -> TOKEN (buy from cheaper venue)
-        let leg1 = self.quote_client
-            .get_quote(WSOL_MINT, token_mint, self.trade_size_lamports, self.slippage_bps, buy_restrict)
-            .await;
-
-        // Fallback to unrestricted if DEX-restricted quote fails
-        let leg1 = match leg1 {
-            Ok(q) => q,
-            Err(_) if buy_restrict.is_some() => {
-                self.quote_client
-                    .get_quote(WSOL_MINT, token_mint, self.trade_size_lamports, self.slippage_bps, None)
-                    .await?
+        // Determine which DEX to buy on and which to try selling on
+        let (buy_dex, sell_dexes): (Dex, Vec<Dex>) = match trigger_direction {
+            // Someone BOUGHT on trigger_dex -> price UP there
+            // Buy from alternatives (still cheap), sell on trigger_dex (now expensive)
+            SwapDirection::Buy => {
+                let alts: Vec<Dex> = alternative_dexes.iter()
+                    .copied()
+                    .filter(|d| *d != trigger_dex)
+                    .collect();
+                // We'll iterate: buy on each alt, sell on trigger
+                // Return best result
+                (trigger_dex, alts) // sell_dex = trigger, buy from alts
             }
-            Err(e) => return Err(e),
-        };
-
-        let leg1_out: u64 = leg1.out_amount.parse()?;
-        if leg1_out == 0 {
-            anyhow::bail!("Triggered leg 1 returned zero");
-        }
-
-        let leg1_route = JupiterQuoteClient::primary_route_label(&leg1)
-            .unwrap_or("?").to_string();
-
-        // Leg 2: TOKEN -> SOL (sell on more expensive venue)
-        // Rate limiting handled globally by JupiterQuoteClient
-        let leg2 = self.quote_client
-            .get_quote(token_mint, WSOL_MINT, leg1_out, self.slippage_bps, sell_restrict)
-            .await;
-
-        let leg2 = match leg2 {
-            Ok(q) => q,
-            Err(_) if sell_restrict.is_some() => {
-                self.quote_client
-                    .get_quote(token_mint, WSOL_MINT, leg1_out, self.slippage_bps, None)
-                    .await?
+            // Someone SOLD on trigger_dex -> price DOWN there
+            // Buy on trigger_dex (now cheap), sell on alternatives (still expensive)
+            SwapDirection::Sell => {
+                let alts: Vec<Dex> = alternative_dexes.iter()
+                    .copied()
+                    .filter(|d| *d != trigger_dex)
+                    .collect();
+                (trigger_dex, alts) // buy_dex = trigger, sell on alts
             }
-            Err(e) => return Err(e),
         };
 
-        let leg2_out: u64 = leg2.out_amount.parse()?;
+        let mut best_result: Option<ScanResult> = None;
 
-        let leg2_route = JupiterQuoteClient::primary_route_label(&leg2)
-            .unwrap_or("?").to_string();
+        for alt_dex in &sell_dexes {
+            let (leg1_restrict, leg2_restrict) = match trigger_direction {
+                SwapDirection::Buy => (Some(*alt_dex), Some(trigger_dex)),
+                SwapDirection::Sell => (Some(trigger_dex), Some(*alt_dex)),
+            };
 
-        let input = self.trade_size_lamports as i64;
-        let output = leg2_out as i64;
-        let gross = output - input;
-        let net = gross - ROUND_TRIP_TX_COST;
-        let profit_bps = (gross as f64 / input as f64) * 10_000.0;
+            // Leg 1: SOL -> TOKEN (restricted to buy venue)
+            let leg1 = match self.quote_client
+                .get_quote(WSOL_MINT, token_mint, self.trade_size_lamports, self.slippage_bps, leg1_restrict)
+                .await
+            {
+                Ok(q) => q,
+                Err(_) => continue, // this DEX doesn't have a pool for this token
+            };
 
-        let tag = match trigger_direction {
-            SwapDirection::Buy => format!("{} price UP", trigger_dex),
-            SwapDirection::Sell => format!("{} price DOWN", trigger_dex),
-        };
+            let leg1_out: u64 = match leg1.out_amount.parse() {
+                Ok(v) if v > 0 => v,
+                _ => continue,
+            };
 
-        let result = ScanResult {
-            scan_type: ScanType::RoundTrip,
-            token_symbol: token_symbol.to_string(),
-            token_mint: token_mint.to_string(),
-            input_lamports: self.trade_size_lamports,
-            output_lamports: leg2_out,
-            gross_profit_lamports: gross,
-            net_profit_lamports: net,
-            profit_bps,
-            route_description: format!(
-                "TRIGGERED({}) SOL -[{}]-> {} -[{}]-> SOL",
-                tag, leg1_route, token_symbol, leg2_route
-            ),
-            profitable: net > 0,
-        };
+            let leg1_route = JupiterQuoteClient::primary_route_label(&leg1)
+                .unwrap_or("?").to_string();
 
-        if result.profitable {
-            info!(
-                "TRIGGERED *** PROFIT *** {} | +{:.6} SOL | {:.1} bps | {}",
-                token_symbol,
-                net as f64 / 1e9,
+            // Leg 2: TOKEN -> SOL (restricted to sell venue)
+            let leg2 = match self.quote_client
+                .get_quote(token_mint, WSOL_MINT, leg1_out, self.slippage_bps, leg2_restrict)
+                .await
+            {
+                Ok(q) => q,
+                Err(_) => continue,
+            };
+
+            let leg2_out: u64 = match leg2.out_amount.parse() {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+
+            let leg2_route = JupiterQuoteClient::primary_route_label(&leg2)
+                .unwrap_or("?").to_string();
+
+            let realistic_output = apply_execution_penalty(leg2_out);
+
+            let input = self.trade_size_lamports as i64;
+            let output = realistic_output as i64;
+            let gross = output - input;
+            let net = gross - ROUND_TRIP_TX_COST;
+            let profit_bps = (gross as f64 / input as f64) * 10_000.0;
+
+            let result = ScanResult {
+                scan_type: ScanType::RoundTrip,
+                token_symbol: token_symbol.to_string(),
+                token_mint: token_mint.to_string(),
+                input_lamports: self.trade_size_lamports,
+                output_lamports: realistic_output,
+                gross_profit_lamports: gross,
+                net_profit_lamports: net,
                 profit_bps,
-                result.route_description,
-            );
+                route_description: format!(
+                    "TRIGGERED({} {}) SOL -[{}]-> {} -[{}]-> SOL",
+                    trigger_dex, trigger_direction,
+                    leg1_route, token_symbol, leg2_route
+                ),
+                profitable: net > 0,
+            };
+
+            if result.profitable {
+                info!(
+                    "TRIGGERED *** PROFIT *** {} via {} | +{:.6} SOL | {:.1} bps | {}",
+                    token_symbol, alt_dex,
+                    net as f64 / 1e9,
+                    profit_bps,
+                    result.route_description,
+                );
+                return Ok(result); // Found profit, return immediately
+            }
+
+            // Track best (least negative) result
+            match &best_result {
+                None => best_result = Some(result),
+                Some(prev) if net > prev.net_profit_lamports => best_result = Some(result),
+                _ => {}
+            }
         }
 
-        Ok(result)
+        best_result.ok_or_else(|| anyhow::anyhow!(
+            "No DEX routes available for {} on alternatives to {}",
+            token_symbol, buy_dex
+        ))
     }
 
     /// Graduation sniper: repeatedly scan a just-graduated token for 60 seconds.
@@ -370,11 +407,20 @@ impl ScanResult {
             simulated_output: Some(self.output_lamports as i64),
             output_mint: WSOL_MINT.to_string(),
             simulated_profit_lamports: Some(self.net_profit_lamports),
-            tx_fee_lamports: Some(210_000),
-            priority_fee_lamports: Some(200_000),
+            tx_fee_lamports: Some(ROUND_TRIP_TX_COST),
+            priority_fee_lamports: Some(2_000_000),
             simulation_success: true,
             error_message: None,
             simulated_at: Utc::now(),
         }
     }
+}
+
+/// Apply execution penalty to a Jupiter quote output to model real-world losses.
+/// Jupiter quotes are optimistic -- real execution always gets less due to
+/// slippage (30 bps) and MEV/sandwich attacks (20 bps).
+fn apply_execution_penalty(quote_output: u64) -> u64 {
+    let penalty_fraction = EXECUTION_PENALTY_BPS / 10_000.0;
+    let deduction = (quote_output as f64 * penalty_fraction) as u64;
+    quote_output.saturating_sub(deduction)
 }

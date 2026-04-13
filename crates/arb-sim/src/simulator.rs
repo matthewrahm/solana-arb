@@ -14,8 +14,10 @@ use crate::jupiter_quote::JupiterQuoteClient;
 
 /// Estimated base fee per transaction (lamports)
 const BASE_TX_FEE: i64 = 5_000;
-/// Estimated priority fee per transaction (lamports)
-const PRIORITY_FEE: i64 = 100_000;
+/// Estimated priority fee per transaction (lamports) - realistic for memecoin activity
+const PRIORITY_FEE: i64 = 1_000_000;
+/// Execution penalty in bps (slippage + MEV cost) applied to quote output
+const EXECUTION_PENALTY_BPS: f64 = 50.0;
 
 #[derive(Clone)]
 pub struct Simulator {
@@ -34,7 +36,7 @@ impl Simulator {
     pub fn new(sol_usd_price: Arc<RwLock<f64>>) -> Self {
         Self {
             quote_client: Arc::new(JupiterQuoteClient::new()),
-            trade_size_lamports: 10_000_000_000, // 10 SOL
+            trade_size_lamports: 1_000_000_000, // 1 SOL (realistic for micro-cap pools)
             slippage_bps: 50,                     // 0.5%
             sol_usd_price,
             semaphore: Arc::new(Semaphore::new(1)),
@@ -123,9 +125,14 @@ impl Simulator {
             .parse()
             .context("Failed to parse leg 2 out_amount")?;
 
-        // P&L calculation
+        // Apply execution penalty: real execution always gets less than the quote
+        let penalty_fraction = EXECUTION_PENALTY_BPS / 10_000.0;
+        let penalty = (leg2_out as f64 * penalty_fraction) as i64;
+        let realistic_output = leg2_out as i64 - penalty;
+
+        // P&L calculation with realistic fees
         let input_lamports = trade_lamports as i64;
-        let output_lamports = leg2_out as i64;
+        let output_lamports = realistic_output;
         let tx_fees = BASE_TX_FEE * 2;
         let priority_fees = PRIORITY_FEE * 2;
         let gross_profit = output_lamports - input_lamports;
