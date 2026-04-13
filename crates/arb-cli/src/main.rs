@@ -241,7 +241,23 @@ async fn main() -> Result<()> {
         }
 
         // Run detection
-        if let Some(opp) = detector.process(quote) {
+        let (opp, delta) = detector.process(quote);
+
+        // Log significant price moves (delta detection)
+        if let Some(d) = delta {
+            let direction = if d.delta_bps > 0.0 { "UP" } else { "DOWN" };
+            info!(
+                "DELTA {} {:.1} bps on {} {:>8} | ${:.10} -> ${:.10}",
+                direction,
+                d.delta_bps.abs(),
+                d.dex,
+                &d.base_mint[..8],
+                d.old_price,
+                d.new_price,
+            );
+        }
+
+        if let Some(opp) = opp {
             opp_count += 1;
 
             info!(

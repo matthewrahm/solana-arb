@@ -1,6 +1,7 @@
 //! Jupiter V6 Quote API client for getting swap quotes.
 
 use anyhow::{Context, Result};
+use arb_types::Dex;
 use serde::Deserialize;
 
 pub struct JupiterQuoteClient {
@@ -50,19 +51,26 @@ impl JupiterQuoteClient {
         }
     }
 
-    /// Get a swap quote from Jupiter.
-    /// `amount` is in raw token units (e.g., lamports for SOL).
+    /// Get a swap quote from Jupiter, optionally restricted to a specific DEX.
     pub async fn get_quote(
         &self,
         input_mint: &str,
         output_mint: &str,
         amount: u64,
         slippage_bps: u16,
+        restrict_dex: Option<Dex>,
     ) -> Result<QuoteResponse> {
-        let url = format!(
+        let mut url = format!(
             "{}?inputMint={}&outputMint={}&amount={}&slippageBps={}",
             self.base_url, input_mint, output_mint, amount, slippage_bps
         );
+
+        // Restrict routing to a specific DEX if requested
+        if let Some(dex) = restrict_dex {
+            if let Some(jup_name) = dex_to_jupiter_name(dex) {
+                url.push_str(&format!("&dexes={}", jup_name));
+            }
+        }
 
         let resp = self
             .client
@@ -85,5 +93,17 @@ impl JupiterQuoteClient {
     /// Get the route label (DEX name) from the first leg of a quote.
     pub fn primary_route_label(quote: &QuoteResponse) -> Option<&str> {
         quote.route_plan.first().map(|leg| leg.swap_info.label.as_str())
+    }
+}
+
+/// Map our Dex enum to Jupiter's dexes parameter values.
+/// Jupiter uses specific label names for DEX routing.
+fn dex_to_jupiter_name(dex: Dex) -> Option<&'static str> {
+    match dex {
+        Dex::Raydium => Some("Raydium,Raydium CLMM"),
+        Dex::Orca => Some("Whirlpool"),
+        Dex::Meteora => Some("Meteora,Meteora DLMM"),
+        Dex::PumpFun => None, // PumpFun not directly routable via Jupiter
+        _ => None,
     }
 }
