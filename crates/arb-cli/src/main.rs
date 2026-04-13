@@ -185,9 +185,10 @@ async fn main() -> Result<()> {
     // Create simulator for paper trading
     let simulator = arb_sim::Simulator::new(sol_usd_price.clone());
 
-    // Start WebSocket pool monitor (if API key provided and not disabled)
+    // Start WebSocket pool monitor (only if API key provided, not disabled, AND we have tokens to watch)
+    // In micro-cap mode with no static watchlist, skip this -- forge feed handles real-time data
     if let Some(ref api_key) = helius_api_key {
-        if !args.no_ws {
+        if !args.no_ws && !watch_mints.is_empty() {
 
             // Graduation event channel
             let (grad_tx, mut grad_rx) = mpsc::channel::<GraduationEvent>(100);
@@ -430,6 +431,7 @@ async fn main() -> Result<()> {
     let mut ws_quote_count: u64 = 0;
     let mut signal_count: u64 = 0;
     let mut triggered_count: u64 = 0;
+    let mut quotes_alive = true; // false once all quote senders drop
 
     info!("Pipeline running. Polling every {}s...", args.poll_interval);
     info!("Min spread threshold: {} bps", args.min_spread);
@@ -438,10 +440,14 @@ async fn main() -> Result<()> {
 
     loop {
         let quote = tokio::select! {
-            q = quote_rx.recv() => {
+            q = quote_rx.recv(), if quotes_alive => {
                 match q {
                     Some(q) => Some(q),
-                    None => break, // all senders dropped
+                    None => {
+                        quotes_alive = false;
+                        info!("Quote channel closed, running on forge signals + discovery only");
+                        continue;
+                    }
                 }
             }
             sig = signal_rx.recv() => {
