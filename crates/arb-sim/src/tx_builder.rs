@@ -18,7 +18,7 @@ const ASSOCIATED_TOKEN_PROGRAM: &str = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA
 
 /// PumpSwap AMM program ID (graduated PumpFun tokens).
 #[allow(dead_code)]
-const PUMPSWAP_PROGRAM: &str = "PSwapMdSai8tjrEXcxFeQth87xC4rRsa4VA5mhGhXkP";
+const PUMPSWAP_PROGRAM: &str = "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA";
 
 /// Raydium AMM V4 authority PDA seed.
 const RAYDIUM_AUTHORITY_SEED: &[u8] = &[

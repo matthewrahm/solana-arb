@@ -113,6 +113,7 @@ impl AmmQuoter {
             Dex::Raydium => self.quote_raydium(pool, input_mint, amount_in).await,
             Dex::PumpSwap => self.quote_pumpswap(pool, input_mint, amount_in).await,
             Dex::PumpFun => self.quote_pumpfun(pool, input_mint, amount_in).await,
+            Dex::RaydiumClmm => self.quote_raydium_clmm(pool, input_mint, amount_in).await,
             Dex::Orca => self.quote_orca(pool, input_mint, amount_in).await,
             other => bail!("Local quoting not supported for {:?}", other),
         }
@@ -172,6 +173,49 @@ impl AmmQuoter {
             fee_amount: fee,
             price_impact_bps: impact_bps,
             reserves: (reserve_in, reserve_out),
+        })
+    }
+
+    /// Quote a Raydium CLMM swap using sqrt_price approximation.
+    /// The pool account contains vaults, sqrt_price, liquidity, and mint info.
+    async fn quote_raydium_clmm(
+        &self,
+        pool: &KnownPool,
+        input_mint: &str,
+        amount_in: u64,
+    ) -> Result<LocalQuote> {
+        let accounts = self
+            .get_multiple_accounts(&[pool.pool_address.as_str()])
+            .await?;
+
+        let pool_data = accounts
+            .get(&pool.pool_address)
+            .ok_or_else(|| anyhow::anyhow!("Failed to fetch CLMM pool account"))?;
+
+        let state = pool_decoder::decode_raydium_clmm(pool_data)?;
+
+        let mint_0_str = bs58::encode(state.mint_0).into_string();
+        let is_0_to_1 = input_mint == mint_0_str;
+
+        // Default fee 25 bps (actual varies by amm_config, but we'd need another RPC call)
+        let fee_bps = pool.dex.fee_bps();
+
+        let output = pool_decoder::clmm_swap_output(&state, amount_in, fee_bps, is_0_to_1);
+
+        debug!(
+            "CLMM LOCAL: pool={} sqrt_price={} liq={} fee={:.1}bps 0_to_1={} input={} output={}",
+            &pool.pool_address[..8], state.sqrt_price_x64, state.liquidity, fee_bps, is_0_to_1, amount_in, output
+        );
+
+        Ok(LocalQuote {
+            pool_address: pool.pool_address.clone(),
+            dex: Dex::RaydiumClmm,
+            input_mint: input_mint.to_string(),
+            input_amount: amount_in,
+            output_amount: output,
+            fee_amount: (amount_in as f64 * fee_bps / 10_000.0) as u64,
+            price_impact_bps: 0.0,
+            reserves: (0, 0),
         })
     }
 
@@ -346,7 +390,7 @@ impl AmmQuoter {
                         all_addresses.push(b.as_str());
                     }
                 }
-                Dex::PumpFun | Dex::Orca => {
+                Dex::PumpFun | Dex::Orca | Dex::RaydiumClmm => {
                     all_addresses.push(pool.pool_address.as_str());
                 }
                 _ => {}
@@ -374,6 +418,9 @@ impl AmmQuoter {
                 }
                 Dex::PumpFun => {
                     self.quote_pumpfun_from_cache(pool, input_mint, amount_in, &accounts)
+                }
+                Dex::RaydiumClmm => {
+                    self.quote_clmm_from_cache(pool, input_mint, amount_in, &accounts)
                 }
                 Dex::Orca => {
                     self.quote_orca_from_cache(pool, input_mint, amount_in, &accounts)
@@ -512,6 +559,40 @@ impl AmmQuoter {
             fee_amount: fee,
             price_impact_bps: (amount_in as f64 / reserves.0.max(1) as f64) * 10_000.0,
             reserves,
+        })
+    }
+
+    fn quote_clmm_from_cache(
+        &self,
+        pool: &KnownPool,
+        input_mint: &str,
+        amount_in: u64,
+        accounts: &HashMap<String, Vec<u8>>,
+    ) -> Result<LocalQuote> {
+        let pool_data = accounts.get(&pool.pool_address)
+            .ok_or_else(|| anyhow::anyhow!("CLMM pool not in cache"))?;
+
+        let state = pool_decoder::decode_raydium_clmm(pool_data)?;
+        let mint_0_str = bs58::encode(state.mint_0).into_string();
+        let is_0_to_1 = input_mint == mint_0_str;
+        let fee_bps = pool.dex.fee_bps();
+
+        let output = pool_decoder::clmm_swap_output(&state, amount_in, fee_bps, is_0_to_1);
+
+        debug!(
+            "CLMM LOCAL (cache): pool={} 0_to_1={} input={} output={}",
+            &pool.pool_address[..8], is_0_to_1, amount_in, output
+        );
+
+        Ok(LocalQuote {
+            pool_address: pool.pool_address.clone(),
+            dex: Dex::RaydiumClmm,
+            input_mint: input_mint.to_string(),
+            input_amount: amount_in,
+            output_amount: output,
+            fee_amount: (amount_in as f64 * fee_bps / 10_000.0) as u64,
+            price_impact_bps: 0.0,
+            reserves: (0, 0),
         })
     }
 

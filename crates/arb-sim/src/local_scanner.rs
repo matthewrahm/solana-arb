@@ -440,7 +440,7 @@ impl LocalScanner {
             let dex = Dex::from_dexscreener_id(&pair.dex_id);
 
             // Only support DEXes we can locally quote
-            if !matches!(dex, Dex::Raydium | Dex::PumpSwap | Dex::PumpFun | Dex::Orca) {
+            if !matches!(dex, Dex::Raydium | Dex::RaydiumClmm | Dex::PumpSwap | Dex::PumpFun | Dex::Orca) {
                 continue;
             }
 
@@ -467,8 +467,11 @@ impl LocalScanner {
             pools.push(known_pool);
         }
 
-        // Resolve vault addresses for Raydium pools
+        // Resolve vault addresses for Raydium pools (V4 and CLMM)
         self.resolve_raydium_vaults(&mut pools).await;
+
+        // Resolve vault addresses for PumpSwap pools
+        self.resolve_pumpswap_vaults(&mut pools).await;
 
         debug!(
             "Discovered {} quotable pools for {}",
@@ -509,43 +512,111 @@ impl LocalScanner {
         for &idx in &raydium_pools {
             let pool = &mut pools[idx];
             if let Some(data) = accounts.get(&pool.pool_address) {
-                // Raydium V4 pools are exactly 752 bytes. Other sizes indicate
-                // Raydium CLMM (concentrated liquidity, 1544 bytes, owner CAMMCzo5...)
-                // which has a different layout we don't support yet.
-                if data.len() != 752 {
+                if data.len() == 752 {
+                    // Raydium V4 (constant product)
+                    match pool_decoder::decode_raydium_pool_vaults(data) {
+                        Ok((coin_vault, pc_vault)) => {
+                            pool.vault_addresses = Some((
+                                bs58::encode(coin_vault).into_string(),
+                                bs58::encode(pc_vault).into_string(),
+                            ));
+                            debug!(
+                                "Resolved Raydium V4 vaults for pool {}",
+                                &pool.pool_address[..8]
+                            );
+                        }
+                        Err(e) => {
+                            debug!("Failed to decode Raydium V4 pool {}: {}", &pool.pool_address[..8], e);
+                        }
+                    }
+                } else if data.len() >= 1544 {
+                    // Raydium CLMM (concentrated liquidity)
+                    match pool_decoder::decode_raydium_clmm(data) {
+                        Ok(state) => {
+                            pool.dex = Dex::RaydiumClmm;
+                            pool.vault_addresses = Some((
+                                bs58::encode(state.vault_0).into_string(),
+                                bs58::encode(state.vault_1).into_string(),
+                            ));
+                            // Store decimals in the base/quote mint fields for later use
+                            pool.base_mint = bs58::encode(state.mint_0).into_string();
+                            pool.quote_mint = bs58::encode(state.mint_1).into_string();
+                            info!(
+                                "Resolved Raydium CLMM pool {} (dec {}/{})",
+                                &pool.pool_address[..8], state.decimals_0, state.decimals_1
+                            );
+                        }
+                        Err(e) => {
+                            debug!("Failed to decode Raydium CLMM pool {}: {}", &pool.pool_address[..8], e);
+                        }
+                    }
+                } else {
                     debug!(
-                        "Raydium pool {} is {} bytes (not V4, expected 752), skipping",
+                        "Raydium pool {} is {} bytes (unknown layout), skipping",
                         &pool.pool_address[..8], data.len()
                     );
-                    continue;
                 }
-                match pool_decoder::decode_raydium_pool_vaults(data) {
-                    Ok((coin_vault, pc_vault)) => {
+            }
+        }
+
+        // Remove Raydium/RaydiumClmm pools where we couldn't resolve vaults
+        pools.retain(|p| !matches!(p.dex, Dex::Raydium | Dex::RaydiumClmm) || p.vault_addresses.is_some());
+    }
+
+    /// Fetch account data for multiple addresses via RPC.
+    /// For PumpSwap pools, fetch the pool account and decode vault pubkeys.
+    async fn resolve_pumpswap_vaults(&self, pools: &mut Vec<KnownPool>) {
+        let pumpswap_pools: Vec<usize> = pools
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.dex == Dex::PumpSwap && p.vault_addresses.is_none())
+            .map(|(i, _)| i)
+            .collect();
+
+        if pumpswap_pools.is_empty() {
+            return;
+        }
+
+        let addresses: Vec<&str> = pumpswap_pools
+            .iter()
+            .map(|&i| pools[i].pool_address.as_str())
+            .collect();
+
+        let accounts = match self.fetch_accounts(&addresses).await {
+            Ok(a) => a,
+            Err(e) => {
+                warn!("Failed to fetch PumpSwap pool accounts: {}", e);
+                return;
+            }
+        };
+
+        for &idx in &pumpswap_pools {
+            let pool = &mut pools[idx];
+            if let Some(data) = accounts.get(&pool.pool_address) {
+                match pool_decoder::decode_pumpswap_pool(data) {
+                    Ok(state) => {
                         pool.vault_addresses = Some((
-                            bs58::encode(coin_vault).into_string(),
-                            bs58::encode(pc_vault).into_string(),
+                            bs58::encode(state.base_vault).into_string(),
+                            bs58::encode(state.quote_vault).into_string(),
                         ));
+                        pool.base_mint = bs58::encode(state.base_mint).into_string();
+                        pool.quote_mint = bs58::encode(state.quote_mint).into_string();
                         debug!(
-                            "Resolved Raydium vaults for pool {}",
+                            "Resolved PumpSwap vaults for pool {}",
                             &pool.pool_address[..8]
                         );
                     }
                     Err(e) => {
-                        debug!(
-                            "Failed to decode Raydium pool {}: {}",
-                            &pool.pool_address[..8],
-                            e
-                        );
+                        debug!("Failed to decode PumpSwap pool {}: {}", &pool.pool_address[..8], e);
                     }
                 }
             }
         }
 
-        // Remove Raydium pools where we couldn't resolve vaults
-        pools.retain(|p| p.dex != Dex::Raydium || p.vault_addresses.is_some());
+        // Remove PumpSwap pools where we couldn't resolve vaults
+        pools.retain(|p| p.dex != Dex::PumpSwap || p.vault_addresses.is_some());
     }
 
-    /// Fetch account data for multiple addresses via RPC.
     async fn fetch_accounts(&self, addresses: &[&str]) -> Result<HashMap<String, Vec<u8>>> {
         if addresses.is_empty() {
             return Ok(HashMap::new());

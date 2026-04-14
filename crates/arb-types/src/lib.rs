@@ -36,6 +36,8 @@ pub const JUPITER_V6: &str = "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4";
 pub const PUMPFUN: &str = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P";
 pub const ORCA_WHIRLPOOL: &str = "whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc";
 pub const METEORA_DAMM_V2: &str = "cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG";
+pub const PUMPSWAP: &str = "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA";
+pub const RAYDIUM_CLMM: &str = "CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK";
 
 // ── Default Fees (bps) ──
 
@@ -48,6 +50,7 @@ pub const DEFAULT_SWAP_FEE_BPS: f64 = 25.0;
 #[serde(rename_all = "lowercase")]
 pub enum Dex {
     Raydium,
+    RaydiumClmm,
     Orca,
     Jupiter,
     Meteora,
@@ -60,6 +63,7 @@ impl Dex {
     pub fn as_str(&self) -> &'static str {
         match self {
             Dex::Raydium => "raydium",
+            Dex::RaydiumClmm => "raydium_clmm",
             Dex::Orca => "orca",
             Dex::Jupiter => "jupiter",
             Dex::Meteora => "meteora",
@@ -86,6 +90,7 @@ impl Dex {
     pub fn fee_bps(&self) -> f64 {
         match self {
             Dex::Raydium => 25.0,
+            Dex::RaydiumClmm => 25.0,  // default, actual fee varies by amm_config (typically 15-100 bps)
             Dex::Orca => 25.0,
             Dex::Meteora => 30.0,
             Dex::PumpFun => 100.0,  // 1% fee

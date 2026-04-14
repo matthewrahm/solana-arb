@@ -41,6 +41,84 @@ pub fn raydium_price_from_vaults(coin_balance: u64, pc_balance: u64, coin_decima
     Ok(pc_adj / coin_adj)
 }
 
+// ── Raydium CLMM (Concentrated Liquidity) ──
+
+/// Raydium CLMM pool: 1544 bytes. Concentrated liquidity like Orca Whirlpool.
+/// Program: CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK
+pub const RAYDIUM_CLMM_LEN: usize = 1544;
+
+const CLMM_MINT_0_OFFSET: usize = 73;
+const CLMM_MINT_1_OFFSET: usize = 105;
+const CLMM_VAULT_0_OFFSET: usize = 137;
+const CLMM_VAULT_1_OFFSET: usize = 169;
+const CLMM_DECIMALS_0_OFFSET: usize = 233;
+const CLMM_DECIMALS_1_OFFSET: usize = 234;
+const CLMM_LIQUIDITY_OFFSET: usize = 237;
+const CLMM_SQRT_PRICE_OFFSET: usize = 253;
+const CLMM_TICK_CURRENT_OFFSET: usize = 269;
+
+/// Decoded Raydium CLMM pool state.
+#[derive(Debug, Clone)]
+pub struct RaydiumClmmState {
+    pub mint_0: [u8; 32],
+    pub mint_1: [u8; 32],
+    pub vault_0: [u8; 32],
+    pub vault_1: [u8; 32],
+    pub decimals_0: u8,
+    pub decimals_1: u8,
+    pub liquidity: u128,
+    pub sqrt_price_x64: u128,
+    pub tick_current: i32,
+}
+
+/// Decode a Raydium CLMM pool account.
+pub fn decode_raydium_clmm(data: &[u8]) -> Result<RaydiumClmmState> {
+    ensure!(data.len() >= RAYDIUM_CLMM_LEN, "CLMM pool too short: {} (need {})", data.len(), RAYDIUM_CLMM_LEN);
+
+    let read_pubkey = |off: usize| -> [u8; 32] {
+        data[off..off + 32].try_into().unwrap()
+    };
+
+    let sqrt_price = u128::from_le_bytes(data[CLMM_SQRT_PRICE_OFFSET..CLMM_SQRT_PRICE_OFFSET + 16].try_into().unwrap());
+    if sqrt_price == 0 {
+        bail!("CLMM sqrt_price is zero");
+    }
+
+    let liquidity = u128::from_le_bytes(data[CLMM_LIQUIDITY_OFFSET..CLMM_LIQUIDITY_OFFSET + 16].try_into().unwrap());
+    let tick_current = i32::from_le_bytes(data[CLMM_TICK_CURRENT_OFFSET..CLMM_TICK_CURRENT_OFFSET + 4].try_into().unwrap());
+
+    Ok(RaydiumClmmState {
+        mint_0: read_pubkey(CLMM_MINT_0_OFFSET),
+        mint_1: read_pubkey(CLMM_MINT_1_OFFSET),
+        vault_0: read_pubkey(CLMM_VAULT_0_OFFSET),
+        vault_1: read_pubkey(CLMM_VAULT_1_OFFSET),
+        decimals_0: data[CLMM_DECIMALS_0_OFFSET],
+        decimals_1: data[CLMM_DECIMALS_1_OFFSET],
+        liquidity,
+        sqrt_price_x64: sqrt_price,
+        tick_current,
+    })
+}
+
+/// Approximate swap output for a Raydium CLMM pool.
+/// Uses the same sqrt_price-based approximation as Orca Whirlpool.
+/// fee_bps must be provided (from amm_config account, or default 25 bps).
+pub fn clmm_swap_output(
+    state: &RaydiumClmmState,
+    amount_in: u64,
+    fee_bps: f64,
+    is_0_to_1: bool,
+) -> u64 {
+    // Reuse the Whirlpool swap output logic -- same concentrated liquidity math
+    whirlpool_swap_output(
+        state.sqrt_price_x64,
+        state.liquidity,
+        amount_in,
+        fee_bps,
+        is_0_to_1,
+    )
+}
+
 // ── Orca Whirlpool ──
 
 /// Whirlpool account layout (Anchor, borsh-packed):
@@ -213,6 +291,42 @@ pub fn pumpfun_price_in_sol(state: &PumpFunState) -> Result<f64> {
     let sol = state.virtual_sol_reserves as f64 / 1e9;
     let tokens = state.virtual_token_reserves as f64 / 1e6;
     Ok(sol / tokens)
+}
+
+// ── PumpSwap Pool ──
+
+/// PumpSwap pool: 301 bytes. Constant-product AMM for graduated PumpFun tokens.
+/// Program: pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA
+pub const PUMPSWAP_POOL_LEN: usize = 301;
+
+const PUMPSWAP_BASE_MINT_OFFSET: usize = 43;
+const PUMPSWAP_QUOTE_MINT_OFFSET: usize = 75;
+const PUMPSWAP_BASE_VAULT_OFFSET: usize = 139;
+const PUMPSWAP_QUOTE_VAULT_OFFSET: usize = 171;
+
+/// Decoded PumpSwap pool state.
+#[derive(Debug, Clone)]
+pub struct PumpSwapPoolState {
+    pub base_mint: [u8; 32],
+    pub quote_mint: [u8; 32],
+    pub base_vault: [u8; 32],
+    pub quote_vault: [u8; 32],
+}
+
+/// Decode a PumpSwap pool account to extract vault addresses.
+pub fn decode_pumpswap_pool(data: &[u8]) -> Result<PumpSwapPoolState> {
+    ensure!(data.len() >= PUMPSWAP_POOL_LEN, "PumpSwap pool too short: {} (need {})", data.len(), PUMPSWAP_POOL_LEN);
+
+    let read_pubkey = |off: usize| -> [u8; 32] {
+        data[off..off + 32].try_into().unwrap()
+    };
+
+    Ok(PumpSwapPoolState {
+        base_mint: read_pubkey(PUMPSWAP_BASE_MINT_OFFSET),
+        quote_mint: read_pubkey(PUMPSWAP_QUOTE_MINT_OFFSET),
+        base_vault: read_pubkey(PUMPSWAP_BASE_VAULT_OFFSET),
+        quote_vault: read_pubkey(PUMPSWAP_QUOTE_VAULT_OFFSET),
+    })
 }
 
 // ── Swap Output Computation ──
