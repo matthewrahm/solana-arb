@@ -118,10 +118,12 @@ impl LocalScanner {
         // Get known pools for this token
         let pools = self.get_or_discover_pools(token_mint).await?;
 
-        if pools.len() < 2 {
+        // Check we have pools on at least 2 different DEXs
+        let dex_set: Vec<Dex> = pools.iter().map(|p| p.dex).collect::<std::collections::HashSet<_>>().into_iter().collect();
+        if dex_set.len() < 2 {
             anyhow::bail!(
-                "Need at least 2 pools for cross-venue arb, found {} for {}",
-                pools.len(),
+                "Need pools on 2+ different DEXs, found {} for {}",
+                dex_set.len(),
                 token_symbol
             );
         }
@@ -157,25 +159,33 @@ impl LocalScanner {
         for &(buy_idx, tokens_received) in &buy_quotes {
             let buy_pool = &pools[buy_idx];
 
-            // Get sell quotes: TOKEN -> SOL on other pools
+            // Get sell quotes: TOKEN -> SOL on other pools (DIFFERENT DEX only)
             let sell_pools: Vec<&KnownPool> = pools
                 .iter()
                 .enumerate()
-                .filter(|(i, _)| *i != buy_idx)
+                .filter(|(i, p)| *i != buy_idx && p.dex != buy_pool.dex)
                 .map(|(_, p)| p)
                 .collect();
 
             for sell_pool in sell_pools {
-                // Quote selling tokens on this venue
                 let sell_result = self
                     .quoter
-                    .quote_swap(sell_pool, &token_mint, tokens_received)
+                    .quote_swap(sell_pool, token_mint, tokens_received)
                     .await;
 
                 let sol_out = match sell_result {
                     Ok(q) if q.output_amount > 0 => q.output_amount,
                     _ => continue,
                 };
+
+                // Sanity check: output can't be >5x input for a SOL round-trip
+                if sol_out > trade_lamports * 5 {
+                    warn!(
+                        "Sanity check failed: {} sell on {} returned {} from {} input (>5x), skipping",
+                        token_symbol, sell_pool.dex, sol_out, trade_lamports
+                    );
+                    continue;
+                }
 
                 // Apply execution penalty
                 let penalty = (sol_out as f64 * EXECUTION_PENALTY_BPS / 10_000.0) as u64;
@@ -247,22 +257,44 @@ impl LocalScanner {
 
         let pools = self.get_or_discover_pools(token_mint).await?;
 
-        if pools.len() < 2 {
+        // Log pool breakdown by DEX for debugging
+        let dex_counts: HashMap<Dex, usize> = pools.iter().fold(HashMap::new(), |mut m, p| {
+            *m.entry(p.dex).or_insert(0) += 1;
+            m
+        });
+        let unique_dexes = dex_counts.len();
+        info!(
+            "SCAN {}: {} pools across {} DEXs: {}",
+            token_symbol,
+            pools.len(),
+            unique_dexes,
+            dex_counts.iter().map(|(d, c)| format!("{}x{}", c, d)).collect::<Vec<_>>().join(", ")
+        );
+
+        if unique_dexes < 2 {
             anyhow::bail!(
-                "Need at least 2 pools for cross-venue arb, found {} for {}",
-                pools.len(),
+                "Need pools on 2+ different DEXs, found {} DEX(es) for {}",
+                unique_dexes,
                 token_symbol
             );
         }
 
-        // Batch-fetch all reserves
-        let quotes = self.quoter.quote_all_pools(&pools, WSOL_MINT, trade_lamports).await;
-
+        // Quote each pool individually (dedup keeps this to 2-3 pools max)
         let mut buy_quotes: Vec<(usize, u64)> = Vec::new();
-        for (i, result) in quotes.iter().enumerate() {
-            if let Ok(q) = result {
-                if q.output_amount > 0 {
+        for (i, pool) in pools.iter().enumerate() {
+            match self.quoter.quote_swap(pool, WSOL_MINT, trade_lamports).await {
+                Ok(q) if q.output_amount > 0 => {
+                    info!(
+                        "  BUY quote: {} pool {} -> {} tokens",
+                        pool.dex, &pool.pool_address[..8], q.output_amount
+                    );
                     buy_quotes.push((i, q.output_amount));
+                }
+                Ok(_q) => {
+                    info!("  BUY quote: {} pool {} -> 0 tokens (empty)", pool.dex, &pool.pool_address[..8]);
+                }
+                Err(e) => {
+                    info!("  BUY quote: {} pool {} -> FAILED: {}", pool.dex, &pool.pool_address[..8], e);
                 }
             }
         }
@@ -273,7 +305,8 @@ impl LocalScanner {
             let buy_pool = &pools[buy_idx];
 
             for (sell_idx, sell_pool) in pools.iter().enumerate() {
-                if sell_idx == buy_idx {
+                // Skip same pool AND same DEX (cross-venue only)
+                if sell_idx == buy_idx || sell_pool.dex == buy_pool.dex {
                     continue;
                 }
 
@@ -285,6 +318,15 @@ impl LocalScanner {
                     Ok(q) if q.output_amount > 0 => q.output_amount,
                     _ => continue,
                 };
+
+                // Sanity check: output can't be >5x input for a SOL round-trip
+                if sol_out > trade_lamports * 5 {
+                    warn!(
+                        "Sanity check failed: {} sell on {} returned {} from {} input (>5x), skipping",
+                        token_symbol, sell_pool.dex, sol_out, trade_lamports
+                    );
+                    continue;
+                }
 
                 let penalty = (sol_out as f64 * EXECUTION_PENALTY_BPS / 10_000.0) as u64;
                 let realistic_out = sol_out.saturating_sub(penalty);
@@ -328,6 +370,20 @@ impl LocalScanner {
         })
     }
 
+    /// Keep at most 1 pool per DEX to minimize RPC calls.
+    /// DexScreener returns pools sorted by liquidity, so the first per DEX is the best.
+    fn dedup_by_dex(pools: &[KnownPool]) -> Vec<KnownPool> {
+        let mut seen = HashMap::new();
+        let mut result = Vec::new();
+        for pool in pools {
+            if !seen.contains_key(&pool.dex) {
+                seen.insert(pool.dex, true);
+                result.push(pool.clone());
+            }
+        }
+        result
+    }
+
     /// Register pools for a token in the registry (called from discovery).
     pub async fn register_pools(&self, token_mint: &str, pools: Vec<KnownPool>) {
         if !pools.is_empty() {
@@ -337,19 +393,21 @@ impl LocalScanner {
     }
 
     /// Get pools from registry, or discover them via DexScreener + RPC.
+    /// Returns at most 1 pool per DEX (best liquidity) to keep RPC batch small.
     async fn get_or_discover_pools(&self, token_mint: &str) -> Result<Vec<KnownPool>> {
         // Check registry first
         {
             let reg = self.pool_registry.read().await;
             if let Some(pools) = reg.get(token_mint) {
                 if !pools.is_empty() {
-                    return Ok(pools.clone());
+                    return Ok(Self::dedup_by_dex(pools));
                 }
             }
         }
 
         // Discover pools via DexScreener
         let pools = self.discover_pools_for_token(token_mint).await?;
+        let pools = Self::dedup_by_dex(&pools);
 
         // Cache in registry
         if !pools.is_empty() {
