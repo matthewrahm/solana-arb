@@ -240,19 +240,21 @@ async fn main() -> Result<()> {
                 }
             });
 
-            // Graduation handler with sniper
-            let grad_scanner = arb_sim::ProfitScanner::new(sol_usd_price.clone());
+            // Graduation handler: local AMM sniper (no Jupiter)
+            let grad_local = local_scanner.clone();
             let grad_store = pool.clone();
+            let grad_mode = exec_mode;
             tokio::spawn(async move {
                 while let Some(event) = grad_rx.recv().await {
+                    let snipe_start = std::time::Instant::now();
                     info!(
-                        "GRADUATION: {} (curve {}) at {} -- LAUNCHING SNIPER",
+                        "GRADUATION: {} (curve {}) at {} -- LAUNCHING LOCAL SNIPER",
                         &event.base_mint[..8],
                         &event.bonding_curve_address[..8],
                         event.graduated_at
                     );
 
-                    let sniper = grad_scanner.clone();
+                    let sniper = grad_local.clone();
                     let mint = event.base_mint.clone();
                     let symbol = if event.token_symbol.is_empty() {
                         format!("{}..{}", &event.base_mint[..4], &event.base_mint[event.base_mint.len()-4..])
@@ -262,13 +264,99 @@ async fn main() -> Result<()> {
                     let snipe_pool = grad_store.clone();
 
                     tokio::spawn(async move {
-                        let results = sniper.snipe_graduation(&mint, &symbol).await;
-                        for r in results {
-                            if r.profitable {
-                                let sim = r.to_sim_result();
-                                arb_store::queries::insert_simulation(&snipe_pool, &sim).await.ok();
+                        // Wait briefly for the new PumpSwap pool to initialize
+                        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
+                        // Rapid scan: check every 5s for 60s after graduation
+                        let max_duration = std::time::Duration::from_secs(60);
+                        let check_interval = std::time::Duration::from_secs(5);
+                        let start = std::time::Instant::now();
+                        let mut attempt = 0;
+
+                        while start.elapsed() < max_duration {
+                            attempt += 1;
+
+                            // Discover pools fresh each attempt (new pool may appear)
+                            match sniper.discover_pools_for_token(&mint).await {
+                                Ok(pools) => {
+                                    sniper.register_pools(&mint, pools).await;
+                                }
+                                Err(_) => {}
                             }
+
+                            match sniper.scan_token(&mint, &symbol).await {
+                                Ok(r) => {
+                                    let latency_ms = snipe_start.elapsed().as_millis();
+                                    let sol_usd = *sniper.sol_usd_price.read().await;
+                                    let net_sol = r.net_profit_lamports as f64 / 1e9;
+
+                                    if r.profitable {
+                                        info!(
+                                            "SNIPE *** PROFIT *** [{}] {} #{} | buy {} sell {} | +{:.6} SOL (${:.4}) | {:.1} bps | {}ms",
+                                            grad_mode, symbol, attempt, r.buy_pool.dex, r.sell_pool.dex,
+                                            net_sol, net_sol * sol_usd, r.profit_bps, latency_ms,
+                                        );
+                                    } else {
+                                        info!(
+                                            "SNIPE {} #{} | {:.6} SOL | {:.1} bps | {}ms",
+                                            symbol, attempt, net_sol, r.profit_bps, latency_ms,
+                                        );
+                                    }
+
+                                    // Store all results
+                                    let sim = arb_types::SimResult {
+                                        id: uuid::Uuid::new_v4(),
+                                        opportunity_id: uuid::Uuid::nil(),
+                                        input_amount: r.input_lamports as i64,
+                                        input_mint: arb_types::WSOL_MINT.to_string(),
+                                        simulated_output: Some(r.output_lamports as i64),
+                                        output_mint: arb_types::WSOL_MINT.to_string(),
+                                        simulated_profit_lamports: Some(r.net_profit_lamports),
+                                        tx_fee_lamports: Some(2_500_000),
+                                        priority_fee_lamports: Some(2_000_000),
+                                        simulation_success: true,
+                                        error_message: None,
+                                        simulated_at: chrono::Utc::now(),
+                                    };
+                                    arb_store::queries::insert_simulation(&snipe_pool, &sim).await.ok();
+
+                                    // Store execution for graduation snipes
+                                    if r.profitable {
+                                        let tip = arb_sim::JitoBundler::calculate_tip(r.net_profit_lamports);
+                                        let exec = arb_types::ExecutionResult {
+                                            id: uuid::Uuid::new_v4(),
+                                            strategy: arb_types::Strategy::GraduationSnipe,
+                                            mode: grad_mode,
+                                            token_mint: r.token_mint.clone(),
+                                            token_symbol: r.token_symbol.clone(),
+                                            buy_dex: Some(r.buy_pool.dex.to_string()),
+                                            sell_dex: Some(r.sell_pool.dex.to_string()),
+                                            input_lamports: r.input_lamports as i64,
+                                            expected_output_lamports: Some(r.output_lamports as i64),
+                                            actual_output_lamports: None,
+                                            expected_profit_lamports: Some(r.net_profit_lamports),
+                                            actual_profit_lamports: None,
+                                            tip_lamports: Some(tip as i64),
+                                            tx_signature: None,
+                                            bundle_id: None,
+                                            status: grad_mode.to_string(),
+                                            error_message: None,
+                                            simulation_units: None,
+                                            executed_at: chrono::Utc::now(),
+                                        };
+                                        arb_store::queries::insert_execution(&snipe_pool, &exec).await.ok();
+                                    }
+                                }
+                                Err(e) => {
+                                    info!("SNIPE {} #{} failed: {}", symbol, attempt, e);
+                                }
+                            }
+
+                            tokio::time::sleep(check_interval).await;
                         }
+
+                        info!("SNIPE {} complete: {} attempts over {:.0}s",
+                            symbol, attempt, start.elapsed().as_secs_f64());
                     });
                 }
             });
@@ -562,19 +650,21 @@ async fn main() -> Result<()> {
                         volume_tracker.cleanup();
                     }
 
-                    // Analyze signal and trigger scan if actionable
+                    // Analyze signal and trigger back-run scan if actionable
                     if let Some(req) = swap_analyzer.analyze(&signal) {
                         triggered_count += 1;
+                        let scan_start = std::time::Instant::now();
                         let symbol = req.token_symbol.clone()
                             .unwrap_or_else(|| format!("{}..{}", &req.token_mint[..4], &req.token_mint[req.token_mint.len()-4..]));
                         let trig_local = local_scanner.clone();
                         let trig_pool = store_pool.clone();
                         let trig_signal = signal.clone();
                         let trig_mode = exec_mode;
+                        let _trig_rpc = rpc_url.clone();
 
                         let signal_sol = req.sol_equivalent;
                         tokio::spawn(async move {
-                            // Primary: local AMM math (no Jupiter)
+                            // BACK-RUN: local AMM math to find cross-venue spread
                             match trig_local.scan_triggered(
                                 &req.token_mint,
                                 &symbol,
@@ -583,15 +673,25 @@ async fn main() -> Result<()> {
                                 signal_sol,
                             ).await {
                                 Ok(r) => {
+                                    let latency_ms = scan_start.elapsed().as_millis();
                                     let profitable = r.profitable;
                                     let sol_usd = *trig_local.sol_usd_price.read().await;
                                     let net_sol = r.net_profit_lamports as f64 / 1e9;
 
+                                    // Determine strategy based on context
+                                    let strategy = arb_types::Strategy::BackRun;
+
                                     if profitable {
                                         info!(
-                                            "LOCAL PROFIT [{}] {} | buy {} sell {} | +{:.6} SOL (${:.4}) | {:.1} bps",
+                                            "BACK-RUN [{}] {} | buy {} sell {} | +{:.6} SOL (${:.4}) | {:.1} bps | {}ms",
                                             trig_mode, symbol, r.buy_pool.dex, r.sell_pool.dex,
-                                            net_sol, net_sol * sol_usd, r.profit_bps,
+                                            net_sol, net_sol * sol_usd, r.profit_bps, latency_ms,
+                                        );
+                                    } else {
+                                        info!(
+                                            "SCAN {} | buy {} sell {} | {:.6} SOL | {:.1} bps | {}ms",
+                                            symbol, r.buy_pool.dex, r.sell_pool.dex,
+                                            net_sol, r.profit_bps, latency_ms,
                                         );
                                     }
 
@@ -600,7 +700,7 @@ async fn main() -> Result<()> {
                                         &trig_pool, &trig_signal, true, Some(profitable),
                                     ).await.ok();
 
-                                    // Store as SimResult (legacy dashboard compat)
+                                    // Store as SimResult (dashboard compat)
                                     let sim = arb_types::SimResult {
                                         id: uuid::Uuid::new_v4(),
                                         opportunity_id: uuid::Uuid::nil(),
@@ -617,11 +717,11 @@ async fn main() -> Result<()> {
                                     };
                                     arb_store::queries::insert_simulation(&trig_pool, &sim).await.ok();
 
-                                    // Store execution record
+                                    // Store execution record with latency
                                     let tip = arb_sim::JitoBundler::calculate_tip(r.net_profit_lamports);
                                     let exec = arb_types::ExecutionResult {
                                         id: uuid::Uuid::new_v4(),
-                                        strategy: arb_types::Strategy::CrossVenueArb,
+                                        strategy,
                                         mode: trig_mode,
                                         token_mint: r.token_mint.clone(),
                                         token_symbol: r.token_symbol.clone(),
@@ -643,7 +743,8 @@ async fn main() -> Result<()> {
                                     arb_store::queries::insert_execution(&trig_pool, &exec).await.ok();
                                 }
                                 Err(e) => {
-                                    warn!("Local scan failed for {}: {}", symbol, e);
+                                    let latency_ms = scan_start.elapsed().as_millis();
+                                    warn!("Back-run scan failed for {} ({}ms): {}", symbol, latency_ms, e);
                                     arb_store::queries::insert_signal(
                                         &trig_pool, &trig_signal, true, None,
                                     ).await.ok();
