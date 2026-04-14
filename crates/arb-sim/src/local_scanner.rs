@@ -509,12 +509,12 @@ impl LocalScanner {
         for &idx in &raydium_pools {
             let pool = &mut pools[idx];
             if let Some(data) = accounts.get(&pool.pool_address) {
-                // Raydium V4 pools are 752 bytes. Shorter accounts are likely
-                // Raydium CLMM (concentrated liquidity) which has a different
-                // layout we don't support yet. Skip silently.
-                if data.len() < 752 {
+                // Raydium V4 pools are exactly 752 bytes. Other sizes indicate
+                // Raydium CLMM (concentrated liquidity, 1544 bytes, owner CAMMCzo5...)
+                // which has a different layout we don't support yet.
+                if data.len() != 752 {
                     debug!(
-                        "Raydium pool {} is {} bytes (likely CLMM, need V4 >= 752), skipping",
+                        "Raydium pool {} is {} bytes (not V4, expected 752), skipping",
                         &pool.pool_address[..8], data.len()
                     );
                     continue;

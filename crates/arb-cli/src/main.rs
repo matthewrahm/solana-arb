@@ -835,7 +835,10 @@ async fn main() -> Result<()> {
                 error!("DB write failed (opp): {}", e);
             }
 
-            // Simulate in background (don't block the price feed loop)
+            // Legacy Jupiter simulation disabled -- local AMM scanner handles all scanning now.
+            // The spread detector still logs opportunities for visibility, but we don't waste
+            // RPC budget on Jupiter quotes that can't capture real spreads.
+            if false {
             let sim = simulator.clone();
             let sim_pool = store_pool.clone();
             let sim_sol_usd = sol_usd_price.clone();
@@ -875,6 +878,7 @@ async fn main() -> Result<()> {
                     }
                 }
             });
+        } // end disabled Jupiter sim
         }
 
         // Periodic stats
