@@ -263,6 +263,67 @@ pub struct CrossVenueResult {
     pub profitable: bool,
 }
 
+// ── Execution Types ──
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionMode {
+    Paper,
+    Simulate,
+    Live,
+}
+
+impl std::fmt::Display for ExecutionMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ExecutionMode::Paper => write!(f, "paper"),
+            ExecutionMode::Simulate => write!(f, "simulate"),
+            ExecutionMode::Live => write!(f, "live"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Strategy {
+    CrossVenueArb,
+    GraduationSnipe,
+    BackRun,
+}
+
+impl std::fmt::Display for Strategy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Strategy::CrossVenueArb => write!(f, "cross_venue_arb"),
+            Strategy::GraduationSnipe => write!(f, "graduation_snipe"),
+            Strategy::BackRun => write!(f, "back_run"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecutionResult {
+    pub id: Uuid,
+    pub strategy: Strategy,
+    pub mode: ExecutionMode,
+    pub token_mint: String,
+    pub token_symbol: String,
+    pub buy_dex: Option<String>,
+    pub sell_dex: Option<String>,
+    pub input_lamports: i64,
+    pub expected_output_lamports: Option<i64>,
+    pub actual_output_lamports: Option<i64>,
+    pub expected_profit_lamports: Option<i64>,
+    pub actual_profit_lamports: Option<i64>,
+    pub tip_lamports: Option<i64>,
+    pub tx_signature: Option<String>,
+    pub bundle_id: Option<String>,
+    pub status: String,
+    pub error_message: Option<String>,
+    pub simulation_units: Option<i64>,
+    pub executed_at: DateTime<Utc>,
+}
+
 // ── Configuration ──
 
 #[derive(Debug, Clone)]

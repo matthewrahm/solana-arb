@@ -1,5 +1,5 @@
 use anyhow::Result;
-use arb_types::{ArbOpportunity, PriceQuote, SimResult, SwapSignal};
+use arb_types::{ArbOpportunity, ExecutionResult, PriceQuote, SimResult, SwapSignal};
 use sqlx::PgPool;
 
 /// Insert a batch of price snapshots
@@ -375,4 +375,77 @@ pub struct TokenSafetyRow {
     pub top_holder_pct: Option<f64>,
     pub safe: Option<bool>,
     pub checked_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+// ── Execution Queries ──
+
+pub async fn insert_execution(pool: &PgPool, exec: &ExecutionResult) -> Result<()> {
+    sqlx::query(
+        r#"
+        INSERT INTO executions
+            (id, strategy, mode, token_mint, token_symbol, buy_dex, sell_dex,
+             input_lamports, expected_output_lamports, actual_output_lamports,
+             expected_profit_lamports, actual_profit_lamports, tip_lamports,
+             tx_signature, bundle_id, status, error_message, simulation_units, executed_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+        "#,
+    )
+    .bind(exec.id)
+    .bind(&exec.strategy.to_string())
+    .bind(&exec.mode.to_string())
+    .bind(&exec.token_mint)
+    .bind(&exec.token_symbol)
+    .bind(&exec.buy_dex)
+    .bind(&exec.sell_dex)
+    .bind(exec.input_lamports)
+    .bind(exec.expected_output_lamports)
+    .bind(exec.actual_output_lamports)
+    .bind(exec.expected_profit_lamports)
+    .bind(exec.actual_profit_lamports)
+    .bind(exec.tip_lamports)
+    .bind(&exec.tx_signature)
+    .bind(&exec.bundle_id)
+    .bind(&exec.status)
+    .bind(&exec.error_message)
+    .bind(exec.simulation_units)
+    .bind(exec.executed_at)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn get_recent_executions(pool: &PgPool, limit: i64) -> Result<Vec<ExecutionRow>> {
+    let rows = sqlx::query_as::<_, ExecutionRow>(
+        r#"
+        SELECT id, strategy, mode, token_mint, token_symbol, buy_dex, sell_dex,
+               input_lamports, expected_output_lamports, expected_profit_lamports,
+               tip_lamports, tx_signature, status, error_message, executed_at
+        FROM executions
+        ORDER BY executed_at DESC
+        LIMIT $1
+        "#,
+    )
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
+#[derive(sqlx::FromRow, serde::Serialize)]
+pub struct ExecutionRow {
+    pub id: uuid::Uuid,
+    pub strategy: Option<String>,
+    pub mode: Option<String>,
+    pub token_mint: Option<String>,
+    pub token_symbol: Option<String>,
+    pub buy_dex: Option<String>,
+    pub sell_dex: Option<String>,
+    pub input_lamports: Option<i64>,
+    pub expected_output_lamports: Option<i64>,
+    pub expected_profit_lamports: Option<i64>,
+    pub tip_lamports: Option<i64>,
+    pub tx_signature: Option<String>,
+    pub status: Option<String>,
+    pub error_message: Option<String>,
+    pub executed_at: Option<chrono::DateTime<chrono::Utc>>,
 }

@@ -70,6 +70,14 @@ struct Args {
     /// Path to whale wallets file (one address per line)
     #[arg(long)]
     whale_file: Option<String>,
+
+    /// Execution mode: paper (log only), simulate (simulateTransaction), live (submit via Jito)
+    #[arg(long, default_value = "paper")]
+    mode: String,
+
+    /// Path to keypair file for simulate/live mode (or set ARB_KEYPAIR_PATH env var)
+    #[arg(long)]
+    keypair: Option<String>,
 }
 
 #[tokio::main]
@@ -84,6 +92,18 @@ async fn main() -> Result<()> {
         .init();
 
     let args = Args::parse();
+
+    // Parse execution mode
+    let exec_mode = match args.mode.as_str() {
+        "paper" => arb_types::ExecutionMode::Paper,
+        "simulate" => arb_types::ExecutionMode::Simulate,
+        "live" => arb_types::ExecutionMode::Live,
+        other => {
+            error!("Invalid mode: {}. Use paper, simulate, or live.", other);
+            std::process::exit(1);
+        }
+    };
+    info!("Execution mode: {}", exec_mode);
 
     let database_url = args
         .database_url
@@ -550,6 +570,7 @@ async fn main() -> Result<()> {
                         let trig_local = local_scanner.clone();
                         let trig_pool = store_pool.clone();
                         let trig_signal = signal.clone();
+                        let trig_mode = exec_mode;
 
                         let signal_sol = req.sol_equivalent;
                         tokio::spawn(async move {
@@ -568,8 +589,8 @@ async fn main() -> Result<()> {
 
                                     if profitable {
                                         info!(
-                                            "LOCAL PROFIT {} | buy {} sell {} | +{:.6} SOL (${:.4}) | {:.1} bps",
-                                            symbol, r.buy_pool.dex, r.sell_pool.dex,
+                                            "LOCAL PROFIT [{}] {} | buy {} sell {} | +{:.6} SOL (${:.4}) | {:.1} bps",
+                                            trig_mode, symbol, r.buy_pool.dex, r.sell_pool.dex,
                                             net_sol, net_sol * sol_usd, r.profit_bps,
                                         );
                                     }
@@ -579,7 +600,7 @@ async fn main() -> Result<()> {
                                         &trig_pool, &trig_signal, true, Some(profitable),
                                     ).await.ok();
 
-                                    // Convert CrossVenueResult to SimResult for DB storage
+                                    // Store as SimResult (legacy dashboard compat)
                                     let sim = arb_types::SimResult {
                                         id: uuid::Uuid::new_v4(),
                                         opportunity_id: uuid::Uuid::nil(),
@@ -595,6 +616,31 @@ async fn main() -> Result<()> {
                                         simulated_at: chrono::Utc::now(),
                                     };
                                     arb_store::queries::insert_simulation(&trig_pool, &sim).await.ok();
+
+                                    // Store execution record
+                                    let tip = arb_sim::JitoBundler::calculate_tip(r.net_profit_lamports);
+                                    let exec = arb_types::ExecutionResult {
+                                        id: uuid::Uuid::new_v4(),
+                                        strategy: arb_types::Strategy::CrossVenueArb,
+                                        mode: trig_mode,
+                                        token_mint: r.token_mint.clone(),
+                                        token_symbol: r.token_symbol.clone(),
+                                        buy_dex: Some(r.buy_pool.dex.to_string()),
+                                        sell_dex: Some(r.sell_pool.dex.to_string()),
+                                        input_lamports: r.input_lamports as i64,
+                                        expected_output_lamports: Some(r.output_lamports as i64),
+                                        actual_output_lamports: None,
+                                        expected_profit_lamports: Some(r.net_profit_lamports),
+                                        actual_profit_lamports: None,
+                                        tip_lamports: Some(tip as i64),
+                                        tx_signature: None,
+                                        bundle_id: None,
+                                        status: trig_mode.to_string(),
+                                        error_message: None,
+                                        simulation_units: None,
+                                        executed_at: chrono::Utc::now(),
+                                    };
+                                    arb_store::queries::insert_execution(&trig_pool, &exec).await.ok();
                                 }
                                 Err(e) => {
                                     warn!("Local scan failed for {}: {}", symbol, e);

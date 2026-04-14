@@ -27,3 +27,8 @@ tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
 futures-util = "0.3"
 base64 = "0.22"
 bs58 = "0.5"
+solana-sdk = "4"
+spl-token = "9"
+spl-associated-token-account = "6"
+bincode = "1"
+solana-system-interface = "3"
