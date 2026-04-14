@@ -113,6 +113,7 @@ impl AmmQuoter {
             Dex::Raydium => self.quote_raydium(pool, input_mint, amount_in).await,
             Dex::PumpSwap => self.quote_pumpswap(pool, input_mint, amount_in).await,
             Dex::PumpFun => self.quote_pumpfun(pool, input_mint, amount_in).await,
+            Dex::Orca => self.quote_orca(pool, input_mint, amount_in).await,
             other => bail!("Local quoting not supported for {:?}", other),
         }
     }
@@ -278,6 +279,55 @@ impl AmmQuoter {
         })
     }
 
+    /// Quote an Orca Whirlpool swap using sqrt_price approximation.
+    /// Fetches the Whirlpool account directly (pool_address = Whirlpool account).
+    async fn quote_orca(
+        &self,
+        pool: &KnownPool,
+        input_mint: &str,
+        amount_in: u64,
+    ) -> Result<LocalQuote> {
+        let accounts = self
+            .get_multiple_accounts(&[pool.pool_address.as_str()])
+            .await?;
+
+        let pool_data = accounts
+            .get(&pool.pool_address)
+            .ok_or_else(|| anyhow::anyhow!("Failed to fetch Whirlpool account"))?;
+
+        let sqrt_price = pool_decoder::decode_whirlpool_sqrt_price(pool_data)?;
+        let liquidity = pool_decoder::decode_whirlpool_liquidity(pool_data)?;
+        let fee_bps = pool_decoder::decode_whirlpool_fee_bps(pool_data)?;
+
+        // Determine swap direction based on Whirlpool token ordering
+        // Whirlpool mint_a is the "first" token. If input is mint_a, it's a_to_b.
+        let mint_a = pool_decoder::decode_whirlpool_mint_a(pool_data)?;
+        let mint_a_str = bs58::encode(mint_a).into_string();
+        let is_a_to_b = input_mint == mint_a_str;
+
+        let output = pool_decoder::whirlpool_swap_output(
+            sqrt_price, liquidity, amount_in, fee_bps, is_a_to_b,
+        );
+
+        let fee = (amount_in as f64 * fee_bps / 10_000.0) as u64;
+
+        debug!(
+            "ORCA LOCAL: pool={} sqrt_price={} liq={} fee={:.1}bps a_to_b={} input={} output={}",
+            &pool.pool_address[..8], sqrt_price, liquidity, fee_bps, is_a_to_b, amount_in, output
+        );
+
+        Ok(LocalQuote {
+            pool_address: pool.pool_address.clone(),
+            dex: Dex::Orca,
+            input_mint: input_mint.to_string(),
+            input_amount: amount_in,
+            output_amount: output,
+            fee_amount: fee,
+            price_impact_bps: 0.0, // hard to estimate for concentrated liquidity
+            reserves: (0, 0),      // CL pools don't have simple reserves
+        })
+    }
+
     /// Batch-quote: given a token and all its known pools, fetch all reserves
     /// and compute local prices in as few RPC calls as possible.
     pub async fn quote_all_pools(
@@ -296,7 +346,7 @@ impl AmmQuoter {
                         all_addresses.push(b.as_str());
                     }
                 }
-                Dex::PumpFun => {
+                Dex::PumpFun | Dex::Orca => {
                     all_addresses.push(pool.pool_address.as_str());
                 }
                 _ => {}
@@ -324,6 +374,9 @@ impl AmmQuoter {
                 }
                 Dex::PumpFun => {
                     self.quote_pumpfun_from_cache(pool, input_mint, amount_in, &accounts)
+                }
+                Dex::Orca => {
+                    self.quote_orca_from_cache(pool, input_mint, amount_in, &accounts)
                 }
                 other => Err(anyhow::anyhow!("Unsupported DEX: {:?}", other)),
             };
@@ -459,6 +512,47 @@ impl AmmQuoter {
             fee_amount: fee,
             price_impact_bps: (amount_in as f64 / reserves.0.max(1) as f64) * 10_000.0,
             reserves,
+        })
+    }
+
+    fn quote_orca_from_cache(
+        &self,
+        pool: &KnownPool,
+        input_mint: &str,
+        amount_in: u64,
+        accounts: &HashMap<String, Vec<u8>>,
+    ) -> Result<LocalQuote> {
+        let pool_data = accounts.get(&pool.pool_address)
+            .ok_or_else(|| anyhow::anyhow!("Whirlpool not in cache"))?;
+
+        let sqrt_price = pool_decoder::decode_whirlpool_sqrt_price(pool_data)?;
+        let liquidity = pool_decoder::decode_whirlpool_liquidity(pool_data)?;
+        let fee_bps = pool_decoder::decode_whirlpool_fee_bps(pool_data)?;
+
+        let mint_a = pool_decoder::decode_whirlpool_mint_a(pool_data)?;
+        let mint_a_str = bs58::encode(mint_a).into_string();
+        let is_a_to_b = input_mint == mint_a_str;
+
+        let output = pool_decoder::whirlpool_swap_output(
+            sqrt_price, liquidity, amount_in, fee_bps, is_a_to_b,
+        );
+
+        let fee = (amount_in as f64 * fee_bps / 10_000.0) as u64;
+
+        debug!(
+            "ORCA LOCAL (cache): pool={} fee={:.1}bps a_to_b={} input={} output={}",
+            &pool.pool_address[..8], fee_bps, is_a_to_b, amount_in, output
+        );
+
+        Ok(LocalQuote {
+            pool_address: pool.pool_address.clone(),
+            dex: Dex::Orca,
+            input_mint: input_mint.to_string(),
+            input_amount: amount_in,
+            output_amount: output,
+            fee_amount: fee,
+            price_impact_bps: 0.0,
+            reserves: (0, 0),
         })
     }
 }

@@ -356,7 +356,7 @@ async fn main() -> Result<()> {
                 Ok(tokens) => {
                     // Filter: safe + liquidity under $200K (micro-cap sweet spot)
                     let safe_tokens: Vec<_> = tokens.into_iter()
-                        .filter(|t| t.safe && t.liquidity_usd < 200_000.0)
+                        .filter(|t| t.safe && t.liquidity_usd < 1_000_000.0)
                         .collect();
 
                     info!("DISCOVERY: {} safe micro-cap tokens found", safe_tokens.len());
@@ -365,19 +365,31 @@ async fn main() -> Result<()> {
                         known.insert(token.mint.clone());
 
                         // Discover pools and populate registry (benefits all scanners)
-                        match disc_local.discover_pools_for_token(&token.mint).await {
+                        let pool_count = match disc_local.discover_pools_for_token(&token.mint).await {
                             Ok(pools) => {
-                                let pool_count = pools.len();
+                                let count = pools.len();
                                 disc_local.register_pools(&token.mint, pools).await;
-                                info!(
-                                    "DISCOVERY: {} has {} quotable pools, registered in pool registry",
-                                    token.symbol, pool_count
-                                );
+                                count
                             }
                             Err(e) => {
                                 warn!("Pool discovery failed for {}: {}", token.symbol, e);
+                                0
                             }
+                        };
+
+                        // Only add to scan list if token has 2+ pools (cross-venue arb needs multiple venues)
+                        if pool_count < 2 {
+                            info!(
+                                "DISCOVERY: {} has {} pool(s), skipping (need 2+ for cross-venue arb)",
+                                token.symbol, pool_count
+                            );
+                            continue;
                         }
+
+                        info!(
+                            "DISCOVERY: {} has {} quotable pools -- SCANNABLE",
+                            token.symbol, pool_count
+                        );
 
                         // Add to shared discovered list for periodic scanner
                         {

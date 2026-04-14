@@ -382,7 +382,7 @@ impl LocalScanner {
             let dex = Dex::from_dexscreener_id(&pair.dex_id);
 
             // Only support DEXes we can locally quote
-            if !matches!(dex, Dex::Raydium | Dex::PumpSwap | Dex::PumpFun) {
+            if !matches!(dex, Dex::Raydium | Dex::PumpSwap | Dex::PumpFun | Dex::Orca) {
                 continue;
             }
 
@@ -451,6 +451,16 @@ impl LocalScanner {
         for &idx in &raydium_pools {
             let pool = &mut pools[idx];
             if let Some(data) = accounts.get(&pool.pool_address) {
+                // Raydium V4 pools are 752 bytes. Shorter accounts are likely
+                // Raydium CLMM (concentrated liquidity) which has a different
+                // layout we don't support yet. Skip silently.
+                if data.len() < 752 {
+                    debug!(
+                        "Raydium pool {} is {} bytes (likely CLMM, need V4 >= 752), skipping",
+                        &pool.pool_address[..8], data.len()
+                    );
+                    continue;
+                }
                 match pool_decoder::decode_raydium_pool_vaults(data) {
                     Ok((coin_vault, pc_vault)) => {
                         pool.vault_addresses = Some((
@@ -463,7 +473,7 @@ impl LocalScanner {
                         );
                     }
                     Err(e) => {
-                        warn!(
+                        debug!(
                             "Failed to decode Raydium pool {}: {}",
                             &pool.pool_address[..8],
                             e

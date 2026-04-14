@@ -85,6 +85,76 @@ pub fn decode_whirlpool_mint_a(data: &[u8]) -> Result<[u8; 32]> {
     Ok(data[WHIRLPOOL_MINT_A_OFFSET..WHIRLPOOL_MINT_A_OFFSET + 32].try_into().unwrap())
 }
 
+/// Whirlpool fee_rate at offset 45 (u16). Value is in hundredths of a basis point.
+/// e.g., fee_rate=3000 means 30 bps (0.3%).
+const WHIRLPOOL_FEE_RATE_OFFSET: usize = 45;
+
+/// Whirlpool liquidity (u128) at offset 49.
+const WHIRLPOOL_LIQUIDITY_OFFSET: usize = 49;
+
+/// Decode fee rate from Whirlpool. Returns fee in basis points.
+pub fn decode_whirlpool_fee_bps(data: &[u8]) -> Result<f64> {
+    ensure!(data.len() >= WHIRLPOOL_FEE_RATE_OFFSET + 2, "Whirlpool too short for fee_rate");
+    let fee_rate = u16::from_le_bytes(
+        data[WHIRLPOOL_FEE_RATE_OFFSET..WHIRLPOOL_FEE_RATE_OFFSET + 2].try_into().unwrap(),
+    );
+    // fee_rate is in hundredths of a bps, so divide by 100 to get bps
+    Ok(fee_rate as f64 / 100.0)
+}
+
+/// Decode liquidity from Whirlpool (u128).
+pub fn decode_whirlpool_liquidity(data: &[u8]) -> Result<u128> {
+    ensure!(data.len() >= WHIRLPOOL_LIQUIDITY_OFFSET + 16, "Whirlpool too short for liquidity");
+    Ok(u128::from_le_bytes(
+        data[WHIRLPOOL_LIQUIDITY_OFFSET..WHIRLPOOL_LIQUIDITY_OFFSET + 16].try_into().unwrap(),
+    ))
+}
+
+/// Approximate swap output for an Orca Whirlpool using the current sqrt_price
+/// and concentrated liquidity. This assumes the trade doesn't cross tick boundaries
+/// (accurate for small trades relative to pool liquidity).
+///
+/// For a swap of token_a -> token_b (buying B with A):
+///   delta_b = L * (sqrt_price_before - sqrt_price_after)
+///   delta_a = L * (1/sqrt_price_after - 1/sqrt_price_before)
+///
+/// We approximate: output ≈ input_after_fee * price * (1 - price_impact)
+pub fn whirlpool_swap_output(
+    sqrt_price: u128,
+    liquidity: u128,
+    amount_in: u64,
+    fee_bps: f64,
+    is_a_to_b: bool,
+) -> u64 {
+    if sqrt_price == 0 || liquidity == 0 || amount_in == 0 {
+        return 0;
+    }
+
+    let fee_fraction = fee_bps / 10_000.0;
+    let net_input = amount_in as f64 * (1.0 - fee_fraction);
+
+    // sqrt_price is Q64.64 fixed-point
+    let sqrt_p = sqrt_price as f64 / (1u128 << 64) as f64;
+    let price = sqrt_p * sqrt_p; // price of A in terms of B
+
+    if is_a_to_b {
+        // Selling A for B: output_b = net_input_a * price
+        // With concentrated liquidity price impact approximation
+        let output = net_input * price;
+        // Conservative: apply additional 10 bps for tick-crossing slippage
+        let slippage = output * 0.001;
+        (output - slippage) as u64
+    } else {
+        // Selling B for A: output_a = net_input_b / price
+        if price <= 0.0 {
+            return 0;
+        }
+        let output = net_input / price;
+        let slippage = output * 0.001;
+        (output - slippage) as u64
+    }
+}
+
 // ── Meteora DAMM v2 ──
 
 /// Meteora pool: sqrt_price_x64 (u128) at offset 0x108.
