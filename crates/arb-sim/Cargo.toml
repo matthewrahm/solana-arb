@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 arb-types = { path = "../arb-types" }
+arb-feed = { path = "../arb-feed" }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -14,3 +15,5 @@ anyhow = { workspace = true }
 tracing = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
+base64 = { workspace = true }
+bs58 = { workspace = true }

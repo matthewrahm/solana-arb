@@ -109,11 +109,13 @@ dependencies = [
  "arb-store",
  "arb-types",
  "axum",
+ "chrono",
  "clap",
  "dotenvy",
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]
@@ -150,7 +152,10 @@ name = "arb-sim"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "arb-feed",
  "arb-types",
+ "base64",
+ "bs58",
  "chrono",
  "reqwest",
  "serde",

@@ -145,6 +145,79 @@ pub fn pumpfun_price_in_sol(state: &PumpFunState) -> Result<f64> {
     Ok(sol / tokens)
 }
 
+// ── Swap Output Computation ──
+// All functions use integer math to avoid floating-point rounding issues.
+// Constant-product formula: output = (input * (10000 - fee_bps) * reserve_out) / (reserve_in * 10000 + input * (10000 - fee_bps))
+
+/// Raydium V4 swap output (25 bps fee).
+/// Given reserves and input amount, returns the output amount after fees.
+pub fn raydium_swap_output(reserve_in: u64, reserve_out: u64, amount_in: u64) -> u64 {
+    constant_product_swap(reserve_in, reserve_out, amount_in, 25)
+}
+
+/// PumpSwap swap output (25 bps fee). Same constant-product as Raydium.
+pub fn pumpswap_swap_output(reserve_in: u64, reserve_out: u64, amount_in: u64) -> u64 {
+    constant_product_swap(reserve_in, reserve_out, amount_in, 25)
+}
+
+/// PumpFun bonding curve buy: SOL in, tokens out (1% fee on SOL input).
+/// Uses virtual reserves for the constant-product calculation.
+pub fn pumpfun_buy_output(state: &PumpFunState, sol_in_lamports: u64) -> u64 {
+    if state.virtual_sol_reserves == 0 || state.virtual_token_reserves == 0 {
+        return 0;
+    }
+    // PumpFun charges 1% fee on the input SOL
+    let fee = sol_in_lamports / 100;
+    let net_sol = sol_in_lamports.saturating_sub(fee);
+    // Constant-product against virtual reserves (no additional AMM fee)
+    constant_product_swap(
+        state.virtual_sol_reserves,
+        state.virtual_token_reserves,
+        net_sol,
+        0, // fee already deducted
+    )
+}
+
+/// PumpFun bonding curve sell: tokens in, SOL out (1% fee on SOL output).
+/// Uses virtual reserves for the constant-product calculation.
+pub fn pumpfun_sell_output(state: &PumpFunState, tokens_in: u64) -> u64 {
+    if state.virtual_sol_reserves == 0 || state.virtual_token_reserves == 0 {
+        return 0;
+    }
+    // Constant-product against virtual reserves
+    let gross_sol = constant_product_swap(
+        state.virtual_token_reserves,
+        state.virtual_sol_reserves,
+        tokens_in,
+        0,
+    );
+    // PumpFun charges 1% fee on the SOL output
+    let fee = gross_sol / 100;
+    gross_sol.saturating_sub(fee)
+}
+
+/// Generic constant-product AMM swap: x * y = k
+/// fee_bps is deducted from the input before computing output.
+fn constant_product_swap(reserve_in: u64, reserve_out: u64, amount_in: u64, fee_bps: u64) -> u64 {
+    if reserve_in == 0 || reserve_out == 0 || amount_in == 0 {
+        return 0;
+    }
+    // Use u128 to prevent overflow on large reserves
+    let amount_in = amount_in as u128;
+    let reserve_in = reserve_in as u128;
+    let reserve_out = reserve_out as u128;
+    let fee_factor = 10_000u128 - fee_bps as u128;
+
+    let numerator = amount_in * fee_factor * reserve_out;
+    let denominator = reserve_in * 10_000u128 + amount_in * fee_factor;
+
+    if denominator == 0 {
+        return 0;
+    }
+
+    (numerator / denominator) as u64
+}
+
 // ── SPL Mint Account ──
 
 /// SPL Mint account: decimals (u8) at offset 44.
@@ -254,5 +327,99 @@ mod tests {
         let mut data = vec![0u8; 82];
         data[44] = 9; // SOL decimals
         assert_eq!(decode_mint_decimals(&data).unwrap(), 9);
+    }
+
+    // ── Swap Output Tests ──
+
+    #[test]
+    fn test_constant_product_basic() {
+        // Pool: 1000 SOL, 1_000_000 tokens. Swap 1 SOL in.
+        // Expected: ~999 tokens out (minus 25bps fee + price impact)
+        let out = raydium_swap_output(
+            1_000 * 1_000_000_000,   // 1000 SOL reserve_in
+            1_000_000 * 1_000_000,   // 1M tokens reserve_out (6 dec)
+            1_000_000_000,           // 1 SOL in
+        );
+        // Without fee: 1M * 1 / (1000 + 1) = ~999 tokens = 999_000_999
+        // With 25bps fee on input: slightly less
+        assert!(out > 990_000_000, "got {} tokens", out);
+        assert!(out < 1_000_000_000, "got {} tokens", out);
+    }
+
+    #[test]
+    fn test_constant_product_zero_input() {
+        assert_eq!(raydium_swap_output(1000, 1000, 0), 0);
+    }
+
+    #[test]
+    fn test_constant_product_zero_reserves() {
+        assert_eq!(raydium_swap_output(0, 1000, 100), 0);
+        assert_eq!(raydium_swap_output(1000, 0, 100), 0);
+    }
+
+    #[test]
+    fn test_pumpswap_same_as_raydium() {
+        // Same fee structure, same formula
+        let r = raydium_swap_output(1000, 2000, 100);
+        let p = pumpswap_swap_output(1000, 2000, 100);
+        assert_eq!(r, p);
+    }
+
+    #[test]
+    fn test_pumpfun_buy() {
+        // Virtual reserves: 30 SOL, 1B tokens (typical initial PumpFun state)
+        let state = PumpFunState {
+            virtual_token_reserves: 1_000_000_000 * 1_000_000, // 1B tokens (6 dec)
+            virtual_sol_reserves: 30 * 1_000_000_000,          // 30 SOL
+            real_token_reserves: 0,
+            real_sol_reserves: 0,
+            complete: false,
+        };
+        // Buy with 1 SOL
+        let tokens_out = pumpfun_buy_output(&state, 1_000_000_000);
+        // After 1% fee: 0.99 SOL effective input
+        // Output ~= 1B * 0.99 / (30 + 0.99) ~= 31.9M tokens
+        assert!(tokens_out > 30_000_000 * 1_000_000, "got {}", tokens_out);
+        assert!(tokens_out < 35_000_000 * 1_000_000, "got {}", tokens_out);
+    }
+
+    #[test]
+    fn test_pumpfun_sell() {
+        let state = PumpFunState {
+            virtual_token_reserves: 1_000_000_000 * 1_000_000,
+            virtual_sol_reserves: 30 * 1_000_000_000,
+            real_token_reserves: 0,
+            real_sol_reserves: 0,
+            complete: false,
+        };
+        // Sell 32M tokens (roughly what 1 SOL buy would give)
+        let sol_out = pumpfun_sell_output(&state, 32_000_000 * 1_000_000);
+        // Should get roughly ~0.94 SOL back (some slippage + 1% fee on output)
+        assert!(sol_out > 800_000_000, "got {} lamports", sol_out);
+        assert!(sol_out < 1_000_000_000, "got {} lamports", sol_out);
+    }
+
+    #[test]
+    fn test_pumpfun_zero_reserves() {
+        let state = PumpFunState {
+            virtual_token_reserves: 0,
+            virtual_sol_reserves: 0,
+            real_token_reserves: 0,
+            real_sol_reserves: 0,
+            complete: false,
+        };
+        assert_eq!(pumpfun_buy_output(&state, 1_000_000_000), 0);
+        assert_eq!(pumpfun_sell_output(&state, 1_000_000), 0);
+    }
+
+    #[test]
+    fn test_large_swap_no_overflow() {
+        // Large reserves: 100K SOL, 100B tokens
+        let out = raydium_swap_output(
+            100_000 * 1_000_000_000,
+            100_000_000_000 * 1_000_000,
+            10_000 * 1_000_000_000, // 10K SOL swap
+        );
+        assert!(out > 0, "should not overflow");
     }
 }

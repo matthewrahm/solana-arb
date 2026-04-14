@@ -9,6 +9,8 @@ use arb_detect::detector::Detector;
 use arb_detect::swap_analyzer::SwapAnalyzer;
 use arb_detect::volume_tracker::VolumeTracker;
 use arb_types::{GraduationEvent, PriceQuote, SwapSignal, WSOL_MINT};
+use chrono;
+use uuid;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -182,8 +184,15 @@ async fn main() -> Result<()> {
     // Wait for initial SOL price
     tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
 
-    // Create simulator for paper trading
+    // Create simulator for paper trading (legacy Jupiter-based, kept for spread detection path)
     let simulator = arb_sim::Simulator::new(sol_usd_price.clone());
+
+    // Local scanner: direct AMM math, no Jupiter dependency
+    let rpc_url = helius_api_key
+        .as_ref()
+        .map(|k| format!("https://mainnet.helius-rpc.com/?api-key={k}"))
+        .unwrap_or_else(|| "https://api.mainnet-beta.solana.com".to_string());
+    let local_scanner = arb_sim::LocalScanner::new(&rpc_url, sol_usd_price.clone());
 
     // Start WebSocket pool monitor (only if API key provided, not disabled, AND we have tokens to watch)
     // In micro-cap mode with no static watchlist, skip this -- forge feed handles real-time data
@@ -485,13 +494,14 @@ async fn main() -> Result<()> {
                         triggered_count += 1;
                         let symbol = req.token_symbol.clone()
                             .unwrap_or_else(|| format!("{}..{}", &req.token_mint[..4], &req.token_mint[req.token_mint.len()-4..]));
-                        let trig_scanner = arb_sim::ProfitScanner::new(sol_usd_price.clone());
+                        let trig_local = local_scanner.clone();
                         let trig_pool = store_pool.clone();
                         let trig_signal = signal.clone();
 
                         let signal_sol = req.sol_equivalent;
                         tokio::spawn(async move {
-                            match trig_scanner.scan_triggered(
+                            // Primary: local AMM math (no Jupiter)
+                            match trig_local.scan_triggered(
                                 &req.token_mint,
                                 &symbol,
                                 req.trigger_dex,
@@ -500,26 +510,41 @@ async fn main() -> Result<()> {
                             ).await {
                                 Ok(r) => {
                                     let profitable = r.profitable;
-                                    let sol_usd = *trig_scanner.sol_usd_price.read().await;
+                                    let sol_usd = *trig_local.sol_usd_price.read().await;
                                     let net_sol = r.net_profit_lamports as f64 / 1e9;
 
                                     if profitable {
                                         info!(
-                                            "FORGE PROFIT {} | +{:.6} SOL (${:.4}) | {:.1} bps | {}",
-                                            symbol, net_sol, net_sol * sol_usd, r.profit_bps, r.route_description,
+                                            "LOCAL PROFIT {} | buy {} sell {} | +{:.6} SOL (${:.4}) | {:.1} bps",
+                                            symbol, r.buy_pool.dex, r.sell_pool.dex,
+                                            net_sol, net_sol * sol_usd, r.profit_bps,
                                         );
                                     }
 
-                                    // Store signal + simulation result (all scans, not just profitable)
+                                    // Store signal + result
                                     arb_store::queries::insert_signal(
                                         &trig_pool, &trig_signal, true, Some(profitable),
                                     ).await.ok();
 
-                                    let sim = r.to_sim_result();
+                                    // Convert CrossVenueResult to SimResult for DB storage
+                                    let sim = arb_types::SimResult {
+                                        id: uuid::Uuid::new_v4(),
+                                        opportunity_id: uuid::Uuid::nil(),
+                                        input_amount: r.input_lamports as i64,
+                                        input_mint: arb_types::WSOL_MINT.to_string(),
+                                        simulated_output: Some(r.output_lamports as i64),
+                                        output_mint: arb_types::WSOL_MINT.to_string(),
+                                        simulated_profit_lamports: Some(r.net_profit_lamports),
+                                        tx_fee_lamports: Some(2_500_000),
+                                        priority_fee_lamports: Some(2_000_000),
+                                        simulation_success: true,
+                                        error_message: None,
+                                        simulated_at: chrono::Utc::now(),
+                                    };
                                     arb_store::queries::insert_simulation(&trig_pool, &sim).await.ok();
                                 }
                                 Err(e) => {
-                                    warn!("Triggered scan failed for {}: {}", symbol, e);
+                                    warn!("Local scan failed for {}: {}", symbol, e);
                                     arb_store::queries::insert_signal(
                                         &trig_pool, &trig_signal, true, None,
                                     ).await.ok();

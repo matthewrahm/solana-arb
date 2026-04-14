@@ -147,6 +147,7 @@ impl Dex {
             "raydium" => Dex::Raydium,
             "jupiter" => Dex::Jupiter,
             "pumpfun" => Dex::PumpFun,
+            "pumpswap" => Dex::PumpSwap,
             _ => Dex::Unknown,
         }
     }
@@ -217,6 +218,49 @@ pub struct SimResult {
     pub simulation_success: bool,
     pub error_message: Option<String>,
     pub simulated_at: DateTime<Utc>,
+}
+
+// ── Pool Registry Types ──
+
+/// A known AMM pool for a token pair, used for local price computation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KnownPool {
+    pub pool_address: String,
+    pub dex: Dex,
+    pub base_mint: String,
+    pub quote_mint: String,
+    /// Raydium: (coin_vault, pc_vault). PumpSwap: (token_vault, sol_vault).
+    /// PumpFun: pool_address IS the bonding curve, no separate vaults needed.
+    pub vault_addresses: Option<(String, String)>,
+}
+
+/// Result of a local AMM quote (no Jupiter involved).
+#[derive(Debug, Clone)]
+pub struct LocalQuote {
+    pub pool_address: String,
+    pub dex: Dex,
+    pub input_mint: String,
+    pub input_amount: u64,
+    pub output_amount: u64,
+    pub fee_amount: u64,
+    pub price_impact_bps: f64,
+    pub reserves: (u64, u64),
+}
+
+/// Result of a cross-venue arbitrage scan using local AMM math.
+#[derive(Debug, Clone)]
+pub struct CrossVenueResult {
+    pub token_mint: String,
+    pub token_symbol: String,
+    pub buy_pool: KnownPool,
+    pub sell_pool: KnownPool,
+    pub input_lamports: u64,
+    pub tokens_received: u64,
+    pub output_lamports: u64,
+    pub gross_profit_lamports: i64,
+    pub net_profit_lamports: i64,
+    pub profit_bps: f64,
+    pub profitable: bool,
 }
 
 // ── Configuration ──

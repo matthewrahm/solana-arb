@@ -42,11 +42,6 @@ impl SwapAnalyzer {
             return None;
         }
 
-        // Skip PumpFun -- not routable via Jupiter for cross-venue arb
-        if signal.platform == Dex::PumpFun {
-            return None;
-        }
-
         // Determine buy/sell venue strategy based on trigger direction
         let (buy_dex, sell_dex) = match signal.direction {
             // Someone BOUGHT token on trigger_dex -> price went UP there

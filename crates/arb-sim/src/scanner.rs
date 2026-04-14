@@ -230,7 +230,7 @@ impl ProfitScanner {
             .max(0.1)  // min 0.1 SOL
             .min(2.0); // max 2 SOL
         let trade_lamports = (dynamic_size * 1e9) as u64;
-        let alternative_dexes = [Dex::Raydium, Dex::Orca, Dex::Meteora];
+        let alternative_dexes = [Dex::Raydium, Dex::Orca, Dex::Meteora, Dex::PumpSwap];
 
         // Determine which DEX to buy on and which to try selling on
         let (buy_dex, sell_dexes): (Dex, Vec<Dex>) = match trigger_direction {

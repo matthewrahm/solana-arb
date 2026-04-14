@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use arb_types::{ArbOpportunity, Dex, SimResult, WSOL_MINT};
+use arb_types::{ArbOpportunity, SimResult, WSOL_MINT};
 use chrono::Utc;
 use tokio::sync::{RwLock, Semaphore};
 use tracing::{info, warn};
@@ -49,11 +49,6 @@ impl Simulator {
     pub async fn simulate(&self, opp: &ArbOpportunity) -> Result<SimResult> {
         let _permit = self.semaphore.acquire().await?;
         let now = Utc::now();
-
-        // Skip PumpFun — not routable via Jupiter
-        if opp.buy_dex == Dex::PumpFun || opp.sell_dex == Dex::PumpFun {
-            return Ok(self.failed_result(opp, "PumpFun not routable via Jupiter"));
-        }
 
         // Dynamic trade size: cap at 2% of the smaller pool's liquidity
         let trade_lamports = self.compute_trade_size(opp).await;

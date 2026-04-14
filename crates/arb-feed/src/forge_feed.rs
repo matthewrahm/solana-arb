@@ -58,6 +58,8 @@ pub enum ForgePlatform {
     Jupiter,
     #[serde(rename = "pumpfun")]
     PumpFun,
+    #[serde(rename = "pumpswap")]
+    PumpSwap,
     Unknown,
 }
 
@@ -67,6 +69,7 @@ impl ForgePlatform {
             ForgePlatform::Raydium => Dex::Raydium,
             ForgePlatform::Jupiter => Dex::Jupiter,
             ForgePlatform::PumpFun => Dex::PumpFun,
+            ForgePlatform::PumpSwap => Dex::PumpSwap,
             ForgePlatform::Unknown => Dex::Unknown,
         }
     }
