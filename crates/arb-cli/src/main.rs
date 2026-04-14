@@ -259,8 +259,8 @@ async fn main() -> Result<()> {
         info!("No HELIUS_API_KEY provided, running HTTP polling only");
     }
 
-    // Periodic scanner: scans discovered micro-cap tokens (populated by discovery loop)
-    let scanner = arb_sim::ProfitScanner::new(sol_usd_price.clone());
+    // Periodic scanner: scans discovered micro-cap tokens using local AMM math
+    let periodic_scanner = local_scanner.clone();
     let scan_pool = pool.clone();
     let scan_discovered = discovered_tokens.clone();
     tokio::spawn(async move {
@@ -277,53 +277,65 @@ async fn main() -> Result<()> {
             }
 
             scan_cycle += 1;
-            info!("--- SCAN CYCLE #{} ({} micro-cap tokens) ---", scan_cycle, tokens.len());
+            info!("--- LOCAL SCAN CYCLE #{} ({} micro-cap tokens) ---", scan_cycle, tokens.len());
 
             let mut profitable_count = 0;
             let mut total_count = 0;
             for (mint, symbol) in &tokens {
-                match scanner.scan_round_trip(mint, symbol).await {
+                match periodic_scanner.scan_token(mint, symbol).await {
                     Ok(r) => {
                         total_count += 1;
-                        let sol_usd = *scanner.sol_usd_price.read().await;
+                        let sol_usd = *periodic_scanner.sol_usd_price.read().await;
                         let net_sol = r.net_profit_lamports as f64 / 1e9;
                         let net_usd = net_sol * sol_usd;
 
                         if r.profitable {
                             profitable_count += 1;
                             info!(
-                                "SCAN *** PROFIT *** {} | {:.4} SOL -> {:.4} SOL | {:.1} bps | +{:.6} SOL (${:.4}) | {}",
+                                "SCAN *** PROFIT *** {} | buy {} sell {} | {:.1} bps | +{:.6} SOL (${:.4})",
                                 r.token_symbol,
-                                r.input_lamports as f64 / 1e9,
-                                r.output_lamports as f64 / 1e9,
+                                r.buy_pool.dex,
+                                r.sell_pool.dex,
                                 r.profit_bps,
                                 net_sol,
                                 net_usd,
-                                r.route_description,
                             );
                         }
 
-                        // Store all scan results (profitable and not) for dashboard visibility
-                        let sim = r.to_sim_result();
+                        // Store all scan results for dashboard visibility
+                        let sim = arb_types::SimResult {
+                            id: uuid::Uuid::new_v4(),
+                            opportunity_id: uuid::Uuid::nil(),
+                            input_amount: r.input_lamports as i64,
+                            input_mint: arb_types::WSOL_MINT.to_string(),
+                            simulated_output: Some(r.output_lamports as i64),
+                            output_mint: arb_types::WSOL_MINT.to_string(),
+                            simulated_profit_lamports: Some(r.net_profit_lamports),
+                            tx_fee_lamports: Some(2_500_000),
+                            priority_fee_lamports: Some(2_000_000),
+                            simulation_success: true,
+                            error_message: None,
+                            simulated_at: chrono::Utc::now(),
+                        };
                         arb_store::queries::insert_simulation(&scan_pool, &sim).await.ok();
                     }
-                    Err(e) => warn!("Scan failed for {}: {}", symbol, e),
+                    Err(e) => warn!("Local scan failed for {}: {}", symbol, e),
                 }
             }
 
             info!(
-                "--- SCAN CYCLE #{} complete: {}/{} profitable ---",
+                "--- LOCAL SCAN CYCLE #{} complete: {}/{} profitable ---",
                 scan_cycle, profitable_count, total_count
             );
 
-            // Scan every 3 minutes (API budget shared with forge-triggered scans)
+            // Scan every 3 minutes
             tokio::time::sleep(std::time::Duration::from_secs(180)).await;
         }
     });
 
     // Micro-cap token discovery loop
-    // Discovers new tokens, runs safety checks, adds safe ones to the shared scan list
-    let disc_scanner = arb_sim::ProfitScanner::new(sol_usd_price.clone());
+    // Discovers new tokens, populates pool registry, runs local cross-venue scans
+    let disc_local = local_scanner.clone();
     let disc_store = pool.clone();
     let disc_rpc = helius_api_key.as_ref().map(|k| format!("https://mainnet.helius-rpc.com/?api-key={k}"));
     let disc_known: std::collections::HashSet<String> = watch_mints.iter().cloned().collect();
@@ -352,6 +364,21 @@ async fn main() -> Result<()> {
                     for token in &safe_tokens {
                         known.insert(token.mint.clone());
 
+                        // Discover pools and populate registry (benefits all scanners)
+                        match disc_local.discover_pools_for_token(&token.mint).await {
+                            Ok(pools) => {
+                                let pool_count = pools.len();
+                                disc_local.register_pools(&token.mint, pools).await;
+                                info!(
+                                    "DISCOVERY: {} has {} quotable pools, registered in pool registry",
+                                    token.symbol, pool_count
+                                );
+                            }
+                            Err(e) => {
+                                warn!("Pool discovery failed for {}: {}", token.symbol, e);
+                            }
+                        }
+
                         // Add to shared discovered list for periodic scanner
                         {
                             let mut list = disc_discovered.write().await;
@@ -364,22 +391,36 @@ async fn main() -> Result<()> {
                             }
                         }
 
-                        // Initial round-trip scan on discovery
-                        match disc_scanner.scan_round_trip(&token.mint, &token.symbol).await {
+                        // Initial local cross-venue scan on discovery
+                        match disc_local.scan_token(&token.mint, &token.symbol).await {
                             Ok(r) => {
-                                let sol_usd = *disc_scanner.sol_usd_price.read().await;
+                                let sol_usd = *disc_local.sol_usd_price.read().await;
                                 let net_sol = r.net_profit_lamports as f64 / 1e9;
 
                                 if r.profitable {
                                     info!(
-                                        "DISCOVERY *** PROFIT *** {} | {:.1} bps | +{:.6} SOL (${:.4}) | liq: ${:.0} | {}",
-                                        r.token_symbol, r.profit_bps, net_sol, net_sol * sol_usd,
-                                        token.liquidity_usd, r.route_description,
+                                        "DISCOVERY *** PROFIT *** {} | buy {} sell {} | {:.1} bps | +{:.6} SOL (${:.4}) | liq: ${:.0}",
+                                        r.token_symbol, r.buy_pool.dex, r.sell_pool.dex,
+                                        r.profit_bps, net_sol, net_sol * sol_usd,
+                                        token.liquidity_usd,
                                     );
                                 }
 
                                 // Store all discovery scans for dashboard visibility
-                                let sim = r.to_sim_result();
+                                let sim = arb_types::SimResult {
+                                    id: uuid::Uuid::new_v4(),
+                                    opportunity_id: uuid::Uuid::nil(),
+                                    input_amount: r.input_lamports as i64,
+                                    input_mint: arb_types::WSOL_MINT.to_string(),
+                                    simulated_output: Some(r.output_lamports as i64),
+                                    output_mint: arb_types::WSOL_MINT.to_string(),
+                                    simulated_profit_lamports: Some(r.net_profit_lamports),
+                                    tx_fee_lamports: Some(2_500_000),
+                                    priority_fee_lamports: Some(2_000_000),
+                                    simulation_success: true,
+                                    error_message: None,
+                                    simulated_at: chrono::Utc::now(),
+                                };
                                 arb_store::queries::insert_simulation(&disc_store, &sim).await.ok();
                             }
                             Err(e) => {

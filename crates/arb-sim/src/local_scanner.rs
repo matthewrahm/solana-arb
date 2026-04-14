@@ -236,6 +236,106 @@ impl LocalScanner {
         })
     }
 
+    /// Periodic cross-venue scan for a token (not triggered by a signal).
+    /// Uses fixed 1 SOL trade size. Returns best result across all venue pairs.
+    pub async fn scan_token(
+        &self,
+        token_mint: &str,
+        token_symbol: &str,
+    ) -> Result<CrossVenueResult> {
+        let trade_lamports: u64 = 1_000_000_000; // 1 SOL
+
+        let pools = self.get_or_discover_pools(token_mint).await?;
+
+        if pools.len() < 2 {
+            anyhow::bail!(
+                "Need at least 2 pools for cross-venue arb, found {} for {}",
+                pools.len(),
+                token_symbol
+            );
+        }
+
+        // Batch-fetch all reserves
+        let quotes = self.quoter.quote_all_pools(&pools, WSOL_MINT, trade_lamports).await;
+
+        let mut buy_quotes: Vec<(usize, u64)> = Vec::new();
+        for (i, result) in quotes.iter().enumerate() {
+            if let Ok(q) = result {
+                if q.output_amount > 0 {
+                    buy_quotes.push((i, q.output_amount));
+                }
+            }
+        }
+
+        let mut best_result: Option<CrossVenueResult> = None;
+
+        for &(buy_idx, tokens_received) in &buy_quotes {
+            let buy_pool = &pools[buy_idx];
+
+            for (sell_idx, sell_pool) in pools.iter().enumerate() {
+                if sell_idx == buy_idx {
+                    continue;
+                }
+
+                let sol_out = match self
+                    .quoter
+                    .quote_swap(sell_pool, token_mint, tokens_received)
+                    .await
+                {
+                    Ok(q) if q.output_amount > 0 => q.output_amount,
+                    _ => continue,
+                };
+
+                let penalty = (sol_out as f64 * EXECUTION_PENALTY_BPS / 10_000.0) as u64;
+                let realistic_out = sol_out.saturating_sub(penalty);
+
+                let input = trade_lamports as i64;
+                let output = realistic_out as i64;
+                let gross = output - input;
+                let net = gross - TX_COST_LAMPORTS;
+                let profit_bps = if input > 0 {
+                    (gross as f64 / input as f64) * 10_000.0
+                } else {
+                    0.0
+                };
+
+                let result = CrossVenueResult {
+                    token_mint: token_mint.to_string(),
+                    token_symbol: token_symbol.to_string(),
+                    buy_pool: buy_pool.clone(),
+                    sell_pool: sell_pool.clone(),
+                    input_lamports: trade_lamports,
+                    tokens_received,
+                    output_lamports: realistic_out,
+                    gross_profit_lamports: gross,
+                    net_profit_lamports: net,
+                    profit_bps,
+                    profitable: net > 0,
+                };
+
+                match &best_result {
+                    None => best_result = Some(result),
+                    Some(prev) if net > prev.net_profit_lamports => {
+                        best_result = Some(result);
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        best_result.ok_or_else(|| {
+            anyhow::anyhow!("No valid cross-venue routes for {}", token_symbol)
+        })
+    }
+
+    /// Register pools for a token in the registry (called from discovery).
+    pub async fn register_pools(&self, token_mint: &str, pools: Vec<KnownPool>) {
+        if !pools.is_empty() {
+            let mut reg = self.pool_registry.write().await;
+            reg.insert(token_mint.to_string(), pools);
+        }
+    }
+
     /// Get pools from registry, or discover them via DexScreener + RPC.
     async fn get_or_discover_pools(&self, token_mint: &str) -> Result<Vec<KnownPool>> {
         // Check registry first
@@ -261,7 +361,7 @@ impl LocalScanner {
     }
 
     /// Query DexScreener for all pools for a token, then resolve vault addresses via RPC.
-    async fn discover_pools_for_token(&self, token_mint: &str) -> Result<Vec<KnownPool>> {
+    pub async fn discover_pools_for_token(&self, token_mint: &str) -> Result<Vec<KnownPool>> {
         let url = format!(
             "https://api.dexscreener.com/latest/dex/tokens/{}",
             token_mint
