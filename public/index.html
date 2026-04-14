@@ -20,490 +20,397 @@
       --accent: #6366f1;
       --profit: #22c55e;
       --loss: #ef4444;
+      --warn: #f59e0b;
       --profit-bg: rgba(34,197,94,0.12);
       --loss-bg: rgba(239,68,68,0.12);
+      --warn-bg: rgba(245,158,11,0.12);
+      --accent-bg: rgba(99,102,241,0.12);
       --radius: 12px;
       --radius-sm: 8px;
       --font-ui: 'Inter', system-ui, sans-serif;
       --font-mono: 'JetBrains Mono', monospace;
     }
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    body {
-      background: var(--bg-page);
-      color: var(--text-primary);
-      font-family: var(--font-ui);
-      font-size: 14px;
-      line-height: 1.5;
-      -webkit-font-smoothing: antialiased;
-    }
-    .container { max-width: 1200px; margin: 0 auto; padding: 32px 24px; }
-    header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 32px;
-      padding-bottom: 20px;
-      border-bottom: 1px solid var(--border-subtle);
-    }
-    header h1 {
-      font-size: 24px;
-      font-weight: 600;
-      letter-spacing: -0.03em;
-      color: var(--text-primary);
-    }
-    header h1 span { color: var(--accent); }
-    .status {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      padding: 6px 14px;
-      border-radius: 9999px;
-      font-size: 12px;
-      font-weight: 500;
-      background: rgba(34,197,94,0.12);
-      color: #22c55e;
-    }
-    .status-dot {
-      width: 6px; height: 6px;
-      border-radius: 50%;
-      background: #22c55e;
-    }
+    body { background: var(--bg-page); color: var(--text-primary); font-family: var(--font-ui); font-size: 14px; line-height: 1.5; -webkit-font-smoothing: antialiased; }
+    .container { max-width: 1280px; margin: 0 auto; padding: 24px; }
 
-    /* Stat Cards */
-    .stats-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-      gap: 16px;
-      margin-bottom: 32px;
-    }
-    .stat-card {
-      background: var(--bg-card);
-      border: 1px solid var(--border-default);
-      border-radius: var(--radius);
-      padding: 20px;
-      transition: border-color 150ms ease;
-    }
-    .stat-card:hover { border-color: var(--border-hover); }
-    .stat-label {
-      font-size: 11px;
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-      color: var(--text-muted);
-      margin-bottom: 8px;
-    }
-    .stat-value {
-      font-family: var(--font-mono);
-      font-size: 24px;
-      font-weight: 500;
-      font-variant-numeric: tabular-nums;
-      color: var(--text-primary);
-    }
+    /* Header */
+    header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; padding-bottom: 16px; border-bottom: 1px solid var(--border-subtle); }
+    header h1 { font-size: 22px; font-weight: 600; letter-spacing: -0.03em; }
+    header h1 span { color: var(--accent); }
+    .header-right { display: flex; align-items: center; gap: 12px; }
+    .mode-badge { padding: 5px 14px; border-radius: 9999px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; cursor: pointer; transition: all 150ms; }
+    .mode-paper { background: var(--accent-bg); color: #818cf8; }
+    .mode-simulate { background: var(--warn-bg); color: var(--warn); }
+    .mode-live { background: var(--loss-bg); color: var(--loss); }
+    .sol-price { font-family: var(--font-mono); font-size: 13px; color: var(--text-muted); }
+    .uptime { font-size: 12px; color: var(--text-muted); font-family: var(--font-mono); }
+
+    /* Controls */
+    .controls { display: flex; gap: 12px; align-items: center; margin-bottom: 24px; flex-wrap: wrap; }
+    .btn { padding: 8px 20px; border-radius: var(--radius-sm); font-size: 13px; font-weight: 500; border: 1px solid var(--border-default); background: var(--bg-card); color: var(--text-primary); cursor: pointer; transition: all 150ms; font-family: var(--font-ui); }
+    .btn:hover { border-color: var(--border-hover); background: var(--bg-elevated); }
+    .btn-start { background: rgba(34,197,94,0.15); border-color: rgba(34,197,94,0.3); color: var(--profit); }
+    .btn-start:hover { background: rgba(34,197,94,0.25); }
+    .btn-stop { background: rgba(239,68,68,0.15); border-color: rgba(239,68,68,0.3); color: var(--loss); }
+    .btn-stop:hover { background: rgba(239,68,68,0.25); }
+    .control-group { display: flex; align-items: center; gap: 8px; }
+    .control-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-muted); }
+    .control-input { background: var(--bg-card); border: 1px solid var(--border-default); border-radius: var(--radius-sm); padding: 6px 12px; color: var(--text-primary); font-family: var(--font-mono); font-size: 13px; width: 80px; }
+    .control-input:focus { outline: none; border-color: var(--accent); }
+    select.control-input { width: auto; cursor: pointer; }
+
+    /* Stats */
+    .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 24px; }
+    .stat-card { background: var(--bg-card); border: 1px solid var(--border-default); border-radius: var(--radius); padding: 16px; }
+    .stat-label { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-muted); margin-bottom: 6px; }
+    .stat-value { font-family: var(--font-mono); font-size: 20px; font-weight: 500; font-variant-numeric: tabular-nums; }
     .stat-value.profit { color: var(--profit); }
     .stat-value.loss { color: var(--loss); }
 
-    /* Section Headers */
-    .section-header {
-      font-size: 16px;
-      font-weight: 500;
-      color: var(--text-primary);
-      margin-bottom: 16px;
-      margin-top: 8px;
-    }
+    /* Two-column layout */
+    .columns { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-bottom: 24px; }
+    @media (max-width: 900px) { .columns { grid-template-columns: 1fr; } }
+
+    /* Live Feed */
+    .live-feed { background: var(--bg-card); border: 1px solid var(--border-default); border-radius: var(--radius); height: 400px; display: flex; flex-direction: column; }
+    .live-feed-header { padding: 12px 16px; border-bottom: 1px solid var(--border-subtle); display: flex; justify-content: space-between; align-items: center; }
+    .live-feed-header h3 { font-size: 13px; font-weight: 600; }
+    .ws-status { font-size: 11px; color: var(--text-muted); }
+    .ws-status.connected { color: var(--profit); }
+    .live-feed-body { flex: 1; overflow-y: auto; padding: 8px; font-family: var(--font-mono); font-size: 12px; line-height: 1.6; }
+    .feed-entry { padding: 2px 8px; border-radius: 4px; }
+    .feed-entry:hover { background: rgba(255,255,255,0.03); }
+    .feed-signal { color: var(--text-secondary); }
+    .feed-scan { color: #818cf8; }
+    .feed-profit { color: var(--profit); font-weight: 500; }
+    .feed-error { color: var(--loss); }
+    .feed-system { color: var(--warn); }
+    .feed-time { color: var(--text-muted); margin-right: 8px; }
 
     /* Tables */
-    .table-wrap {
-      background: var(--bg-card);
-      border: 1px solid var(--border-default);
-      border-radius: var(--radius);
-      overflow: hidden;
-      margin-bottom: 32px;
-    }
-    table {
-      width: 100%;
-      border-collapse: collapse;
-    }
-    thead th {
-      font-size: 11px;
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-      color: var(--text-muted);
-      padding: 12px 16px;
-      text-align: left;
-      border-bottom: 1px solid var(--border-subtle);
-    }
+    .section-header { font-size: 14px; font-weight: 600; margin-bottom: 12px; }
+    .table-wrap { background: var(--bg-card); border: 1px solid var(--border-default); border-radius: var(--radius); overflow: hidden; margin-bottom: 24px; }
+    table { width: 100%; border-collapse: collapse; }
+    thead th { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-muted); padding: 10px 14px; text-align: left; border-bottom: 1px solid var(--border-subtle); }
     thead th.right { text-align: right; }
-    tbody td {
-      font-size: 13px;
-      padding: 10px 16px;
-      border-bottom: 1px solid var(--border-subtle);
-      color: var(--text-secondary);
-    }
-    tbody td.mono {
-      font-family: var(--font-mono);
-      font-variant-numeric: tabular-nums;
-    }
+    tbody td { font-size: 12px; padding: 8px 14px; border-bottom: 1px solid var(--border-subtle); color: var(--text-secondary); }
+    tbody td.mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
     tbody td.right { text-align: right; }
     tbody td.profit { color: var(--profit); }
     tbody td.loss { color: var(--loss); }
     tbody td.primary { color: var(--text-primary); font-weight: 500; }
     tbody tr:hover { background: rgba(255,255,255,0.03); }
     tbody tr:last-child td { border-bottom: none; }
-
-    /* Badges */
-    .badge {
-      display: inline-flex;
-      padding: 3px 10px;
-      border-radius: 9999px;
-      font-size: 11px;
-      font-weight: 500;
-    }
+    .badge { display: inline-flex; padding: 2px 8px; border-radius: 9999px; font-size: 10px; font-weight: 500; }
     .badge-profit { background: var(--profit-bg); color: var(--profit); }
     .badge-loss { background: var(--loss-bg); color: var(--loss); }
-    .badge-info { background: rgba(99,102,241,0.12); color: #818cf8; }
-
-    .empty-state {
-      padding: 32px;
-      text-align: center;
-      color: var(--text-muted);
-      font-size: 13px;
-    }
-    .footer {
-      margin-top: 48px;
-      padding-top: 20px;
-      border-top: 1px solid var(--border-subtle);
-      text-align: center;
-      color: var(--text-muted);
-      font-size: 12px;
-    }
-    .footer a { color: var(--accent); text-decoration: none; }
+    .badge-info { background: var(--accent-bg); color: #818cf8; }
+    .empty-state { padding: 24px; text-align: center; color: var(--text-muted); font-size: 12px; }
   </style>
 </head>
 <body>
   <div class="container">
     <header>
       <h1><span>solana</span>-arb</h1>
-      <div class="status" id="status">
-        <div class="status-dot"></div>
-        Loading...
+      <div class="header-right">
+        <span class="uptime" id="uptime"></span>
+        <span class="sol-price" id="sol-price"></span>
+        <span class="mode-badge mode-paper" id="mode-badge" onclick="cycleMode()">PAPER</span>
       </div>
     </header>
 
-    <!-- Stats Cards -->
-    <div class="stats-grid">
-      <div class="stat-card">
-        <div class="stat-label">Opportunities</div>
-        <div class="stat-value" id="stat-opps">--</div>
+    <!-- Controls -->
+    <div class="controls">
+      <button class="btn btn-start" id="btn-start" onclick="systemStart()">Start System</button>
+      <button class="btn btn-stop" id="btn-stop" onclick="systemStop()">Stop System</button>
+      <div class="control-group">
+        <span class="control-label">Min Signal</span>
+        <input type="number" class="control-input" id="min-signal" value="2" step="0.5" min="0.1" max="50" onchange="updateConfig()">
+        <span class="control-label">SOL</span>
       </div>
-      <div class="stat-card">
-        <div class="stat-label">Avg Spread</div>
-        <div class="stat-value" id="stat-spread">--</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label">Tokens Watched</div>
-        <div class="stat-value" id="stat-tokens">--</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label">Simulations</div>
-        <div class="stat-value" id="stat-sims">--</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label">Sim Win Rate</div>
-        <div class="stat-value" id="stat-winrate">--</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label">Total Sim P&L</div>
-        <div class="stat-value" id="stat-pnl">--</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label">Forge Signals</div>
-        <div class="stat-value" id="stat-signals">--</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label">Signal Hit Rate</div>
-        <div class="stat-value" id="stat-hitrate">--</div>
+      <div class="control-group">
+        <span class="control-label">Mode</span>
+        <select class="control-input" id="mode-select" onchange="updateConfig()">
+          <option value="paper">Paper</option>
+          <option value="simulate">Simulate</option>
+          <option value="live">Live</option>
+        </select>
       </div>
     </div>
 
-    <!-- Recent Opportunities -->
-    <div class="section-header">Recent Opportunities</div>
+    <!-- Stats -->
+    <div class="stats-grid">
+      <div class="stat-card"><div class="stat-label">Signals</div><div class="stat-value" id="stat-signals">0</div></div>
+      <div class="stat-card"><div class="stat-label">Scans Triggered</div><div class="stat-value" id="stat-scans">0</div></div>
+      <div class="stat-card"><div class="stat-label">Profitable</div><div class="stat-value" id="stat-profitable">0</div></div>
+      <div class="stat-card"><div class="stat-label">Win Rate</div><div class="stat-value" id="stat-winrate">--</div></div>
+      <div class="stat-card"><div class="stat-label">Sim P&L</div><div class="stat-value" id="stat-pnl">--</div></div>
+      <div class="stat-card"><div class="stat-label">Avg Spread</div><div class="stat-value" id="stat-spread">--</div></div>
+    </div>
+
+    <!-- Live Feed + Signals side by side -->
+    <div class="columns">
+      <div>
+        <div class="section-header">Live Feed</div>
+        <div class="live-feed">
+          <div class="live-feed-header">
+            <h3>Events</h3>
+            <span class="ws-status" id="ws-status">Disconnected</span>
+          </div>
+          <div class="live-feed-body" id="live-feed"></div>
+        </div>
+      </div>
+      <div>
+        <div class="section-header">Forge Signals</div>
+        <div class="table-wrap" style="max-height:400px; overflow-y:auto;">
+          <table>
+            <thead><tr><th>Token</th><th>Dir</th><th>DEX</th><th class="right">SOL</th><th>Scanned</th><th class="right">Time</th></tr></thead>
+            <tbody id="signals-body"><tr><td colspan="6" class="empty-state">Waiting for signals...</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Executions -->
+    <div class="section-header">Recent Executions</div>
     <div class="table-wrap">
       <table>
-        <thead>
-          <tr>
-            <th>Token</th>
-            <th>Buy DEX</th>
-            <th>Sell DEX</th>
-            <th class="right">Spread</th>
-            <th class="right">Est. Profit</th>
-            <th class="right">Latency</th>
-            <th class="right">Time</th>
-          </tr>
-        </thead>
-        <tbody id="opps-body">
-          <tr><td colspan="7" class="empty-state">Loading...</td></tr>
-        </tbody>
+        <thead><tr><th>Token</th><th>Strategy</th><th>Buy</th><th>Sell</th><th class="right">Input</th><th class="right">Expected P&L</th><th>Mode</th><th class="right">Time</th></tr></thead>
+        <tbody id="exec-body"><tr><td colspan="8" class="empty-state">No executions yet</td></tr></tbody>
       </table>
     </div>
 
-    <!-- Recent Simulations -->
+    <!-- Simulations -->
     <div class="section-header">Recent Simulations</div>
     <div class="table-wrap">
       <table>
-        <thead>
-          <tr>
-            <th>Token</th>
-            <th class="right">Input</th>
-            <th class="right">Output</th>
-            <th class="right">P&L</th>
-            <th>Status</th>
-            <th class="right">Time</th>
-          </tr>
-        </thead>
-        <tbody id="sims-body">
-          <tr><td colspan="6" class="empty-state">Loading...</td></tr>
-        </tbody>
+        <thead><tr><th>Token</th><th class="right">Input</th><th class="right">Output</th><th class="right">P&L</th><th>Status</th><th class="right">Time</th></tr></thead>
+        <tbody id="sims-body"><tr><td colspan="6" class="empty-state">No simulations yet</td></tr></tbody>
       </table>
-    </div>
-
-    <!-- Forge Signals -->
-    <div class="section-header">Forge Swap Signals</div>
-    <div class="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th>Token</th>
-            <th>Direction</th>
-            <th>Platform</th>
-            <th class="right">SOL Size</th>
-            <th>Scanned</th>
-            <th>Result</th>
-            <th class="right">Time</th>
-          </tr>
-        </thead>
-        <tbody id="signals-body">
-          <tr><td colspan="7" class="empty-state">No forge signals yet</td></tr>
-        </tbody>
-      </table>
-    </div>
-
-    <!-- DEX Breakdown -->
-    <div class="section-header">DEX Pair Breakdown</div>
-    <div class="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th>Buy DEX</th>
-            <th>Sell DEX</th>
-            <th class="right">Count</th>
-            <th class="right">Avg Spread</th>
-          </tr>
-        </thead>
-        <tbody id="dex-body">
-          <tr><td colspan="4" class="empty-state">Loading...</td></tr>
-        </tbody>
-      </table>
-    </div>
-
-    <div class="footer">
-      solana-arb &middot; Rust MEV/Arbitrage Detection Engine &middot;
-      <a href="https://github.com/matthewrahm/solana-arb">GitHub</a>
     </div>
   </div>
 
   <script>
-    const API = '';
+    // ── Helpers ──
+    const fmt = (n, d=2) => n == null ? '--' : Number(n).toFixed(d);
+    const fmtSol = (l) => l == null ? '--' : fmt(l/1e9, 4) + ' SOL';
+    const fmtPnl = (l) => { if (l == null) return '--'; const s = l/1e9; return (s>0?'+':'') + fmt(s,6) + ' SOL'; };
+    const pnlCls = (v) => v == null ? '' : v > 0 ? 'profit' : 'loss';
+    const timeAgo = (iso) => { if (!iso) return '--'; const d = (Date.now() - new Date(iso).getTime())/1000; if (d<60) return Math.floor(d)+'s'; if (d<3600) return Math.floor(d/60)+'m'; return Math.floor(d/3600)+'h'; };
+    const timeHMS = (iso) => new Date(iso).toLocaleTimeString('en-US', {hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit'});
+    const fetchJson = async (url) => { try { const r = await fetch(url); return r.ok ? r.json() : null; } catch { return null; } };
+    const postJson = async (url, body={}) => { try { const r = await fetch(url, {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}); return r.ok ? r.json() : null; } catch { return null; } };
 
-    function fmt(n, dec = 2) {
-      if (n == null) return '--';
-      return Number(n).toFixed(dec);
+    // ── WebSocket Live Feed ──
+    let ws = null;
+    const feed = document.getElementById('live-feed');
+    const wsStatus = document.getElementById('ws-status');
+    const MAX_FEED = 200;
+
+    function connectWs() {
+      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      ws = new WebSocket(`${proto}//${location.host}/ws/live`);
+      ws.onopen = () => { wsStatus.textContent = 'Connected'; wsStatus.className = 'ws-status connected'; };
+      ws.onclose = () => { wsStatus.textContent = 'Disconnected'; wsStatus.className = 'ws-status'; setTimeout(connectWs, 3000); };
+      ws.onerror = () => ws.close();
+      ws.onmessage = (e) => {
+        try {
+          const evt = JSON.parse(e.data);
+          addFeedEntry(evt);
+        } catch {}
+      };
     }
 
-    function fmtUsd(n) {
-      if (n == null) return '--';
-      return '$' + Number(n).toFixed(4);
+    function addFeedEntry(evt) {
+      const time = timeHMS(evt.timestamp);
+      let cls = 'feed-signal';
+      let text = '';
+      const d = evt.data || {};
+
+      switch (evt.type) {
+        case 'signal':
+          text = `${d.direction} ${fmt(d.sol,1)} SOL ${d.token} on ${d.platform}`;
+          cls = 'feed-signal';
+          break;
+        case 'scan':
+          text = `SCAN ${d.token} | buy ${d.buy_dex} sell ${d.sell_dex} | ${fmt(d.profit_bps,1)} bps | ${d.latency_ms}ms`;
+          cls = d.profitable ? 'feed-profit' : 'feed-scan';
+          break;
+        case 'system':
+          text = `System ${d.action}`;
+          cls = 'feed-system';
+          break;
+        case 'config':
+          text = `Config updated: mode=${d.mode}`;
+          cls = 'feed-system';
+          break;
+        case 'error':
+          text = d.message || 'Unknown error';
+          cls = 'feed-error';
+          break;
+        default:
+          text = JSON.stringify(d);
+      }
+
+      const el = document.createElement('div');
+      el.className = `feed-entry ${cls}`;
+      el.innerHTML = `<span class="feed-time">${time}</span>${text}`;
+      feed.appendChild(el);
+
+      // Auto-scroll and cap entries
+      while (feed.children.length > MAX_FEED) feed.removeChild(feed.firstChild);
+      feed.scrollTop = feed.scrollHeight;
     }
 
-    function fmtSol(lamports) {
-      if (lamports == null) return '--';
-      return fmt(lamports / 1e9, 4) + ' SOL';
+    // ── Controls ──
+    async function systemStart() {
+      await postJson('/api/v1/system/start');
+      refreshStatus();
     }
 
-    function fmtPnlSol(lamports) {
-      if (lamports == null) return '--';
-      const sol = lamports / 1e9;
-      const prefix = sol > 0 ? '+' : '';
-      return prefix + fmt(sol, 6) + ' SOL';
+    async function systemStop() {
+      if (!confirm('Stop the scanning system?')) return;
+      await postJson('/api/v1/system/stop');
+      refreshStatus();
     }
 
-    function timeAgo(isoStr) {
-      const diff = (Date.now() - new Date(isoStr).getTime()) / 1000;
-      if (diff < 60) return Math.floor(diff) + 's ago';
-      if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
-      if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
-      return Math.floor(diff / 86400) + 'd ago';
+    async function updateConfig() {
+      const mode = document.getElementById('mode-select').value;
+      if (mode === 'live' && !confirm('Switch to LIVE mode? This will execute real trades.')) {
+        document.getElementById('mode-select').value = 'paper';
+        return;
+      }
+      const minSignal = parseFloat(document.getElementById('min-signal').value) || 2;
+      await postJson('/api/v1/config', { mode, min_signal_sol: minSignal });
+      refreshStatus();
     }
 
-    function pnlClass(val) {
-      if (val == null) return '';
-      return val > 0 ? 'profit' : 'loss';
+    function cycleMode() {
+      const sel = document.getElementById('mode-select');
+      const modes = ['paper', 'simulate', 'live'];
+      const cur = modes.indexOf(sel.value);
+      sel.value = modes[(cur + 1) % modes.length];
+      updateConfig();
     }
 
-    async function fetchJson(url) {
-      try {
-        const r = await fetch(API + url);
-        if (!r.ok) return null;
-        return await r.json();
-      } catch { return null; }
+    // ── Status Refresh ──
+    async function refreshStatus() {
+      const status = await fetchJson('/api/v1/status');
+      if (!status) return;
+
+      // Mode badge
+      const badge = document.getElementById('mode-badge');
+      const mode = status.mode || 'paper';
+      badge.textContent = mode.toUpperCase();
+      badge.className = `mode-badge mode-${mode}`;
+      document.getElementById('mode-select').value = mode;
+
+      // Uptime
+      const upEl = document.getElementById('uptime');
+      if (status.uptime_secs != null) {
+        const m = Math.floor(status.uptime_secs / 60);
+        const s = status.uptime_secs % 60;
+        upEl.textContent = `${m}m ${s}s`;
+      } else {
+        upEl.textContent = 'Stopped';
+      }
+
+      // SOL price
+      if (status.sol_usd_price > 0) {
+        document.getElementById('sol-price').textContent = `SOL $${fmt(status.sol_usd_price, 2)}`;
+      }
+
+      // Counters
+      document.getElementById('stat-signals').textContent = status.signals_received || 0;
+      document.getElementById('stat-scans').textContent = status.scans_triggered || 0;
+      document.getElementById('stat-profitable').textContent = status.profitable_scans || 0;
+
+      const scans = status.scans_triggered || 0;
+      const profitable = status.profitable_scans || 0;
+      document.getElementById('stat-winrate').textContent = scans > 0 ? ((profitable/scans)*100).toFixed(1)+'%' : '--';
     }
 
-    async function updateStats() {
-      const stats = await fetchJson('/api/v1/stats');
+    // ── Table Refreshes ──
+    async function refreshTables() {
+      // Simulations
       const simStats = await fetchJson('/api/v1/simulations/stats');
-
-      if (stats) {
-        document.getElementById('stat-opps').textContent = stats.total_opportunities || 0;
-        document.getElementById('stat-spread').textContent = fmt(stats.avg_spread_bps, 1) + ' bps';
-        document.getElementById('stat-tokens').textContent = stats.tokens_monitored || 0;
-      }
-
       if (simStats) {
-        document.getElementById('stat-sims').textContent = simStats.total_simulations || 0;
-
-        const total = simStats.successful || 0;
-        const profitable = simStats.profitable || 0;
-        const rate = total > 0 ? ((profitable / total) * 100).toFixed(1) + '%' : '0%';
-        document.getElementById('stat-winrate').textContent = rate;
-
-        const pnlLamports = simStats.total_profit_lamports || 0;
-        const pnlSol = pnlLamports / 1e9;
-        const pnlEl = document.getElementById('stat-pnl');
-        pnlEl.textContent = (pnlSol > 0 ? '+' : '') + fmt(pnlSol, 4) + ' SOL';
-        pnlEl.className = 'stat-value ' + pnlClass(pnlSol);
+        const pnl = (simStats.total_profit_lamports || 0) / 1e9;
+        const el = document.getElementById('stat-pnl');
+        el.textContent = (pnl>0?'+':'') + fmt(pnl,4) + ' SOL';
+        el.className = 'stat-value ' + pnlCls(pnl);
       }
 
-      document.getElementById('status').innerHTML =
-        '<div class="status-dot"></div>Live';
-    }
-
-    async function updateOpportunities() {
-      const opps = await fetchJson('/api/v1/opportunities');
-      const tbody = document.getElementById('opps-body');
-      if (!opps || opps.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="7" class="empty-state">No opportunities detected yet</td></tr>';
-        return;
+      const stats = await fetchJson('/api/v1/stats');
+      if (stats) {
+        document.getElementById('stat-spread').textContent = fmt(stats.avg_spread_bps, 1) + ' bps';
       }
-      tbody.innerHTML = opps.slice(0, 25).map(o => `
-        <tr>
-          <td class="primary">${o.token_symbol}</td>
-          <td>${o.buy_dex}</td>
-          <td>${o.sell_dex}</td>
-          <td class="right mono">${fmt(o.net_spread_bps, 1)} bps</td>
-          <td class="right mono">${fmtUsd(o.estimated_profit_usd)}</td>
-          <td class="right mono">${o.detection_latency_ms != null ? o.detection_latency_ms + 'ms' : '--'}</td>
-          <td class="right" style="color: var(--text-muted)">${timeAgo(o.detected_at)}</td>
-        </tr>
-      `).join('');
-    }
 
-    async function updateSimulations() {
-      const sims = await fetchJson('/api/v1/simulations');
-      const tbody = document.getElementById('sims-body');
-      if (!sims || sims.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="6" class="empty-state">No simulations yet</td></tr>';
-        return;
-      }
-      tbody.innerHTML = sims.slice(0, 20).map(s => {
-        const profitLamports = s.simulated_profit_lamports;
-        const cls = pnlClass(profitLamports);
-        const statusBadge = s.simulation_success
-          ? (profitLamports > 0
-            ? '<span class="badge badge-profit">PROFIT</span>'
-            : '<span class="badge badge-loss">LOSS</span>')
-          : '<span class="badge badge-info">FAIL</span>';
-        return `
-          <tr>
-            <td class="primary">${s.token_symbol || '--'}</td>
-            <td class="right mono">${fmtSol(s.input_amount)}</td>
-            <td class="right mono">${s.simulated_output ? fmtSol(s.simulated_output) : '--'}</td>
-            <td class="right mono ${cls}">${fmtPnlSol(profitLamports)}</td>
-            <td>${statusBadge}</td>
-            <td class="right" style="color: var(--text-muted)">${timeAgo(s.simulated_at)}</td>
-          </tr>
-        `;
-      }).join('');
-    }
-
-    async function updateSignals() {
+      // Signals table
       const signals = await fetchJson('/api/v1/signals');
-      const signalStats = await fetchJson('/api/v1/signals/stats');
-      const tbody = document.getElementById('signals-body');
-
-      if (signalStats) {
-        document.getElementById('stat-signals').textContent = signalStats.total_signals || 0;
-        const scans = signalStats.total_scans || 0;
-        const profitable = signalStats.profitable_scans || 0;
-        const rate = scans > 0 ? ((profitable / scans) * 100).toFixed(1) + '%' : '0%';
-        document.getElementById('stat-hitrate').textContent = rate;
+      const sigBody = document.getElementById('signals-body');
+      if (signals && signals.length > 0) {
+        sigBody.innerHTML = signals.slice(0,20).map(s => {
+          const mint = s.token_mint || '--';
+          const short = mint.length > 8 ? mint.slice(0,4)+'..'+mint.slice(-4) : mint;
+          return `<tr>
+            <td class="primary mono">${short}</td>
+            <td>${s.direction||'--'}</td>
+            <td>${s.platform||'--'}</td>
+            <td class="right mono">${s.sol_equivalent?fmt(s.sol_equivalent,1):'--'}</td>
+            <td>${s.triggered_scan?'Yes':'No'}</td>
+            <td class="right" style="color:var(--text-muted)">${timeAgo(s.received_at)}</td>
+          </tr>`;
+        }).join('');
       }
 
-      if (!signals || signals.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="7" class="empty-state">No forge signals yet</td></tr>';
-        return;
+      // Simulations table
+      const sims = await fetchJson('/api/v1/simulations');
+      const simBody = document.getElementById('sims-body');
+      if (sims && sims.length > 0) {
+        simBody.innerHTML = sims.slice(0,15).map(s => {
+          const p = s.simulated_profit_lamports;
+          const cls = pnlCls(p);
+          const badge = s.simulation_success ? (p>0 ? '<span class="badge badge-profit">PROFIT</span>' : '<span class="badge badge-loss">LOSS</span>') : '<span class="badge badge-info">FAIL</span>';
+          return `<tr>
+            <td class="primary">${s.token_symbol||'--'}</td>
+            <td class="right mono">${fmtSol(s.input_amount)}</td>
+            <td class="right mono">${s.simulated_output?fmtSol(s.simulated_output):'--'}</td>
+            <td class="right mono ${cls}">${fmtPnl(p)}</td>
+            <td>${badge}</td>
+            <td class="right" style="color:var(--text-muted)">${timeAgo(s.simulated_at)}</td>
+          </tr>`;
+        }).join('');
       }
-      tbody.innerHTML = signals.slice(0, 25).map(s => {
-        const scanned = s.triggered_scan ? 'Yes' : 'No';
-        const resultBadge = s.scan_profitable === true
-          ? '<span class="badge badge-profit">PROFIT</span>'
-          : s.scan_profitable === false
-            ? '<span class="badge badge-loss">NO ARB</span>'
-            : '<span class="badge badge-info">--</span>';
-        const mint = s.token_mint || '--';
-        const shortMint = mint.length > 8 ? mint.slice(0, 4) + '..' + mint.slice(-4) : mint;
-        return `
-          <tr>
-            <td class="primary mono">${shortMint}</td>
-            <td>${s.direction || '--'}</td>
-            <td>${s.platform || '--'}</td>
-            <td class="right mono">${s.sol_equivalent ? fmt(s.sol_equivalent, 1) : '--'}</td>
-            <td>${scanned}</td>
-            <td>${resultBadge}</td>
-            <td class="right" style="color: var(--text-muted)">${s.received_at ? timeAgo(s.received_at) : '--'}</td>
-          </tr>
-        `;
-      }).join('');
-    }
 
-    async function updateDexBreakdown() {
-      const breakdown = await fetchJson('/api/v1/dex-breakdown');
-      const tbody = document.getElementById('dex-body');
-      if (!breakdown || breakdown.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="4" class="empty-state">No data yet</td></tr>';
-        return;
+      // Executions table
+      const execs = await fetchJson('/api/v1/executions');
+      const execBody = document.getElementById('exec-body');
+      if (execs && execs.length > 0) {
+        execBody.innerHTML = execs.slice(0,15).map(e => {
+          const p = e.expected_profit_lamports;
+          const cls = pnlCls(p);
+          return `<tr>
+            <td class="primary">${e.token_symbol||'--'}</td>
+            <td>${e.strategy||'--'}</td>
+            <td>${e.buy_dex||'--'}</td>
+            <td>${e.sell_dex||'--'}</td>
+            <td class="right mono">${fmtSol(e.input_lamports)}</td>
+            <td class="right mono ${cls}">${fmtPnl(p)}</td>
+            <td><span class="badge badge-info">${(e.mode||'paper').toUpperCase()}</span></td>
+            <td class="right" style="color:var(--text-muted)">${timeAgo(e.executed_at)}</td>
+          </tr>`;
+        }).join('');
       }
-      tbody.innerHTML = breakdown.map(d => `
-        <tr>
-          <td>${d.buy_dex}</td>
-          <td>${d.sell_dex}</td>
-          <td class="right mono">${d.count || 0}</td>
-          <td class="right mono">${fmt(d.avg_spread, 1)} bps</td>
-        </tr>
-      `).join('');
     }
 
-    async function refresh() {
-      await Promise.all([
-        updateStats(),
-        updateOpportunities(),
-        updateSimulations(),
-        updateSignals(),
-        updateDexBreakdown(),
-      ]);
-    }
-
-    refresh();
-    setInterval(refresh, 5000);
+    // ── Init ──
+    connectWs();
+    refreshStatus();
+    refreshTables();
+    setInterval(refreshStatus, 3000);
+    setInterval(refreshTables, 5000);
   </script>
 </body>
 </html>

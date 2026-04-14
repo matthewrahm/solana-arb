@@ -342,3 +342,59 @@ pub struct Config {
     /// Tokens to monitor (mint addresses)
     pub watch_mints: Vec<String>,
 }
+
+// ── Runtime Config (shared, hot-reloadable) ──
+
+/// Mutable runtime configuration shared across all tasks via Arc<RwLock<>>.
+/// Modified by the control panel API, read by scanning/detection tasks.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuntimeConfig {
+    pub mode: ExecutionMode,
+    pub min_signal_sol: f64,
+    pub min_liquidity: f64,
+    pub max_liquidity: f64,
+    pub min_spread_bps: f64,
+    pub watch_mints: Vec<String>,
+    pub system_running: bool,
+    #[serde(skip)]
+    pub started_at: Option<DateTime<Utc>>,
+}
+
+impl Default for RuntimeConfig {
+    fn default() -> Self {
+        Self {
+            mode: ExecutionMode::Paper,
+            min_signal_sol: 2.0,
+            min_liquidity: 5000.0,
+            max_liquidity: 1_000_000.0,
+            min_spread_bps: 10.0,
+            watch_mints: Vec::new(),
+            system_running: false,
+            started_at: None,
+        }
+    }
+}
+
+/// System status returned by the /api/v1/status endpoint.
+#[derive(Debug, Clone, Serialize)]
+pub struct SystemStatus {
+    pub system_running: bool,
+    pub mode: ExecutionMode,
+    pub forge_connected: bool,
+    pub scanner_active: bool,
+    pub discovery_active: bool,
+    pub uptime_secs: Option<u64>,
+    pub sol_usd_price: f64,
+    pub signals_received: u64,
+    pub scans_triggered: u64,
+    pub profitable_scans: u64,
+}
+
+/// Live event sent over WebSocket to the control panel.
+#[derive(Debug, Clone, Serialize)]
+pub struct LiveEvent {
+    #[serde(rename = "type")]
+    pub event_type: String,
+    pub data: serde_json::Value,
+    pub timestamp: DateTime<Utc>,
+}

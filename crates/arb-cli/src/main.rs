@@ -1,16 +1,19 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64};
 
 use anyhow::Result;
 use clap::Parser;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{broadcast, mpsc, RwLock};
 use tracing::{error, info, warn};
 
 use arb_detect::detector::Detector;
 use arb_detect::swap_analyzer::SwapAnalyzer;
 use arb_detect::volume_tracker::VolumeTracker;
-use arb_types::{GraduationEvent, PriceQuote, SwapSignal, WSOL_MINT};
+use arb_types::{GraduationEvent, PriceQuote, RuntimeConfig, SwapSignal, WSOL_MINT};
 use chrono;
 use uuid;
+
+mod system_manager;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -145,15 +148,48 @@ async fn main() -> Result<()> {
         detector.register_symbol(mint, symbol);
     }
 
+    // SOL/USD price tracker (shared across all components)
+    let sol_usd_price = Arc::new(RwLock::new(0.0));
+
+    // Runtime config (shared, modifiable via API)
+    let runtime_config = Arc::new(RwLock::new(RuntimeConfig {
+        mode: exec_mode,
+        min_signal_sol: args.min_signal_sol,
+        min_liquidity: args.min_liquidity,
+        max_liquidity: 1_000_000.0,
+        min_spread_bps: args.min_spread,
+        watch_mints: args.watch.clone(),
+        system_running: true, // running by default (CLI start = system start)
+        started_at: Some(chrono::Utc::now()),
+    }));
+
+    // Broadcast channel for live WebSocket feed
+    let (live_tx, _) = broadcast::channel::<String>(1000);
+
+    // Counters for status tracking
+    let signals_received = Arc::new(AtomicU64::new(0));
+    let scans_triggered = Arc::new(AtomicU64::new(0));
+    let profitable_scans = Arc::new(AtomicU64::new(0));
+    let forge_connected = Arc::new(AtomicBool::new(false));
+
     // Channel for price quotes (shared between HTTP poller and WebSocket monitor)
     let (quote_tx, mut quote_rx) = mpsc::channel::<PriceQuote>(5000);
 
-    // Start API server
-    let api_pool = pool.clone();
+    // Start API server with full AppState
+    let api_state = arb_api::AppState {
+        db: pool.clone(),
+        config: runtime_config.clone(),
+        live_tx: live_tx.clone(),
+        signals_received: signals_received.clone(),
+        scans_triggered: scans_triggered.clone(),
+        profitable_scans: profitable_scans.clone(),
+        forge_connected: forge_connected.clone(),
+        sol_usd_price: sol_usd_price.clone(),
+    };
     let api_port = args.port;
     tokio::spawn(async move {
         info!("API server on http://localhost:{}", api_port);
-        let app = arb_api::build_router(api_pool);
+        let app = arb_api::build_router(api_state);
         let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", api_port))
             .await
             .expect("Failed to bind API port");
@@ -180,9 +216,6 @@ async fn main() -> Result<()> {
     } else {
         info!("HTTP poller disabled (micro-cap mode: forge + discovery only)");
     }
-
-    // SOL/USD price tracker (shared across WebSocket monitor + simulator)
-    let sol_usd_price = Arc::new(RwLock::new(0.0));
 
     // Background: update SOL/USD every 30s
     let sol_price_ref = sol_usd_price.clone();
@@ -627,6 +660,20 @@ async fn main() -> Result<()> {
             sig = signal_rx.recv() => {
                 if let Some(signal) = sig {
                     signal_count += 1;
+                    signals_received.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+                    // Broadcast signal to live WebSocket feed
+                    live_tx.send(serde_json::json!({
+                        "type": "signal",
+                        "data": {
+                            "direction": signal.direction.to_string(),
+                            "sol": signal.sol_equivalent,
+                            "platform": signal.platform.to_string(),
+                            "token": signal.token_mint[..8.min(signal.token_mint.len())],
+                            "signature": &signal.signature[..8.min(signal.signature.len())],
+                        },
+                        "timestamp": chrono::Utc::now(),
+                    }).to_string()).ok();
 
                     let is_whale = whale_tracker.is_whale(&signal.signer);
                     let whale_tag = if is_whale { " [WHALE]" } else { "" };
