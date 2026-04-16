@@ -63,7 +63,7 @@ struct Args {
     no_forge: bool,
 
     /// Minimum SOL value for forge swap signals to trigger scans (lower = more micro-cap sensitive)
-    #[arg(long, default_value = "2")]
+    #[arg(long, default_value = "1")]
     min_signal_sol: f64,
 
     /// Whale wallet addresses to prioritize (comma-separated)
@@ -246,6 +246,7 @@ async fn main() -> Result<()> {
         .map(|k| format!("https://mainnet.helius-rpc.com/?api-key={k}"))
         .unwrap_or_else(|| "https://api.mainnet-beta.solana.com".to_string());
     let local_scanner = arb_sim::LocalScanner::new(&rpc_url, sol_usd_price.clone());
+    let observer = arb_sim::StaleReserveObserver::new();
 
     // Start WebSocket pool monitor (only if API key provided, not disabled, AND we have tokens to watch)
     // In micro-cap mode with no static watchlist, skip this -- forge feed handles real-time data
@@ -345,8 +346,8 @@ async fn main() -> Result<()> {
                                         simulated_output: Some(r.output_lamports as i64),
                                         output_mint: arb_types::WSOL_MINT.to_string(),
                                         simulated_profit_lamports: Some(r.net_profit_lamports),
-                                        tx_fee_lamports: Some(2_500_000),
-                                        priority_fee_lamports: Some(2_000_000),
+                                        tx_fee_lamports: Some(r.fixed_cost_lamports),
+                                        priority_fee_lamports: Some(r.jito_tip_lamports as i64),
                                         simulation_success: true,
                                         error_message: None,
                                         simulated_at: chrono::Utc::now(),
@@ -355,7 +356,7 @@ async fn main() -> Result<()> {
 
                                     // Store execution for graduation snipes
                                     if r.profitable {
-                                        let tip = arb_sim::JitoBundler::calculate_tip(r.net_profit_lamports);
+                                        let tip = r.jito_tip_lamports;
                                         let exec = arb_types::ExecutionResult {
                                             id: uuid::Uuid::new_v4(),
                                             strategy: arb_types::Strategy::GraduationSnipe,
@@ -452,8 +453,8 @@ async fn main() -> Result<()> {
                             simulated_output: Some(r.output_lamports as i64),
                             output_mint: arb_types::WSOL_MINT.to_string(),
                             simulated_profit_lamports: Some(r.net_profit_lamports),
-                            tx_fee_lamports: Some(2_500_000),
-                            priority_fee_lamports: Some(2_000_000),
+                            tx_fee_lamports: Some(r.fixed_cost_lamports),
+                            priority_fee_lamports: Some(r.jito_tip_lamports as i64),
                             simulation_success: true,
                             error_message: None,
                             simulated_at: chrono::Utc::now(),
@@ -568,8 +569,8 @@ async fn main() -> Result<()> {
                                     simulated_output: Some(r.output_lamports as i64),
                                     output_mint: arb_types::WSOL_MINT.to_string(),
                                     simulated_profit_lamports: Some(r.net_profit_lamports),
-                                    tx_fee_lamports: Some(2_500_000),
-                                    priority_fee_lamports: Some(2_000_000),
+                                    tx_fee_lamports: Some(r.fixed_cost_lamports),
+                                    priority_fee_lamports: Some(r.jito_tip_lamports as i64),
                                     simulation_success: true,
                                     error_message: None,
                                     simulated_at: chrono::Utc::now(),
@@ -583,6 +584,93 @@ async fn main() -> Result<()> {
                     }
                 }
                 Err(e) => warn!("Discovery loop error: {}", e),
+            }
+
+            // Also check trending/boosted tokens for multi-pool cross-venue opportunities
+            match arb_feed::discovery::discover_trending_multi_pool(
+                &known,
+                5000.0,
+            ).await {
+                Ok(tokens) => {
+                    for token in &tokens {
+                        known.insert(token.mint.clone());
+
+                        // Discover and register pools
+                        let pool_count = match disc_local.discover_pools_for_token(&token.mint).await {
+                            Ok(pools) => {
+                                let count = pools.len();
+                                disc_local.register_pools(&token.mint, pools).await;
+                                count
+                            }
+                            Err(e) => {
+                                warn!("Pool discovery failed for {}: {}", token.symbol, e);
+                                continue;
+                            }
+                        };
+
+                        if pool_count < 2 {
+                            continue;
+                        }
+
+                        info!(
+                            "TRENDING: {} has {} pools -- SCANNABLE",
+                            token.symbol, pool_count
+                        );
+
+                        // Add to scan list
+                        {
+                            let mut list = disc_discovered.write().await;
+                            if !list.iter().any(|(m, _)| m == &token.mint) {
+                                list.push((token.mint.clone(), token.symbol.clone()));
+                                if list.len() > 50 {
+                                    list.remove(0);
+                                }
+                            }
+                        }
+
+                        // Initial scan
+                        match disc_local.scan_token(&token.mint, &token.symbol).await {
+                            Ok(r) => {
+                                let sol_usd = *disc_local.sol_usd_price.read().await;
+                                let net_sol = r.net_profit_lamports as f64 / 1e9;
+
+                                if r.profitable {
+                                    info!(
+                                        "TRENDING *** PROFIT *** {} | buy {} sell {} | {:.1} bps | +{:.6} SOL (${:.4})",
+                                        r.token_symbol, r.buy_pool.dex, r.sell_pool.dex,
+                                        r.profit_bps, net_sol, net_sol * sol_usd,
+                                    );
+                                } else {
+                                    info!(
+                                        "TRENDING SCAN {} | buy {} sell {} | {:.1} bps | {:.6} SOL",
+                                        r.token_symbol, r.buy_pool.dex, r.sell_pool.dex,
+                                        r.profit_bps, net_sol,
+                                    );
+                                }
+
+                                let sim = arb_types::SimResult {
+                                    id: uuid::Uuid::new_v4(),
+                                    opportunity_id: uuid::Uuid::nil(),
+                                    input_amount: r.input_lamports as i64,
+                                    input_mint: arb_types::WSOL_MINT.to_string(),
+                                    simulated_output: Some(r.output_lamports as i64),
+                                    output_mint: arb_types::WSOL_MINT.to_string(),
+                                    simulated_profit_lamports: Some(r.net_profit_lamports),
+                                    tx_fee_lamports: Some(r.fixed_cost_lamports),
+                                    priority_fee_lamports: Some(r.jito_tip_lamports as i64),
+                                    simulation_success: true,
+                                    error_message: None,
+                                    simulated_at: chrono::Utc::now(),
+                                };
+                                arb_store::queries::insert_simulation(&disc_store, &sim).await.ok();
+                            }
+                            Err(e) => {
+                                warn!("Trending scan failed for {}: {}", token.symbol, e);
+                            }
+                        }
+                    }
+                }
+                Err(e) => warn!("Trending discovery error: {}", e),
             }
 
             // Run discovery every 3 minutes (core pipeline for finding new opportunities)
@@ -708,9 +796,59 @@ async fn main() -> Result<()> {
                         let trig_signal = signal.clone();
                         let trig_mode = exec_mode;
                         let _trig_rpc = rpc_url.clone();
+                        let trig_observer = observer.clone();
 
                         let signal_sol = req.sol_equivalent;
+                        // Clone everything each future needs — no shared captures.
+                        let obs_pool = trig_pool.clone();
+                        let obs_sig = trig_signal.signature.clone();
+                        let obs_mint = req.token_mint.clone();
+                        let obs_symbol = symbol.clone();
+                        let obs_dex = req.trigger_dex;
+                        let obs_dir = req.trigger_direction;
+                        let obs_sol_eq = req.sol_equivalent;
                         tokio::spawn(async move {
+                            // Phase B2: fire observation (DexScreener HTTP, ~100ms, zero Helius credits)
+                            // in parallel with the scan_triggered RPC-heavy path.
+                            let obs_dex_str = obs_dex.to_string();
+                            let obs_dir_str = match obs_dir {
+                                arb_types::SwapDirection::Buy => "buy",
+                                arb_types::SwapDirection::Sell => "sell",
+                            };
+                            let observation_fut = async {
+                                let obs_input = arb_sim::ObservationInput {
+                                    signature: Some(obs_sig.as_str()),
+                                    token_mint: obs_mint.as_str(),
+                                    token_symbol: Some(obs_symbol.as_str()),
+                                    trigger_dex: obs_dex,
+                                    trigger_pool_address: None,
+                                    trigger_direction: obs_dir,
+                                    trigger_sol_equivalent: obs_sol_eq,
+                                };
+                                match trig_observer.observe(&obs_input).await {
+                                    Ok(obs) => {
+                                        arb_store::queries::insert_observation(
+                                            &obs_pool,
+                                            Some(obs_sig.as_str()),
+                                            obs_mint.as_str(),
+                                            Some(obs_symbol.as_str()),
+                                            &obs_dex_str,
+                                            &obs.pool_address,
+                                            obs_dir_str,
+                                            obs_sol_eq,
+                                            obs.pool_implied_price_usd,
+                                            obs.fair_price_usd,
+                                            obs.delta_bps,
+                                            obs.pool_liquidity_usd,
+                                            obs.observation_latency_ms,
+                                        ).await.ok();
+                                    }
+                                    Err(e) => {
+                                        tracing::debug!("observe failed for {}: {}", obs_symbol, e);
+                                    }
+                                }
+                            };
+                            let scan_fut = async {
                             // BACK-RUN: local AMM math to find cross-venue spread
                             match trig_local.scan_triggered(
                                 &req.token_mint,
@@ -756,8 +894,8 @@ async fn main() -> Result<()> {
                                         simulated_output: Some(r.output_lamports as i64),
                                         output_mint: arb_types::WSOL_MINT.to_string(),
                                         simulated_profit_lamports: Some(r.net_profit_lamports),
-                                        tx_fee_lamports: Some(2_500_000),
-                                        priority_fee_lamports: Some(2_000_000),
+                                        tx_fee_lamports: Some(r.fixed_cost_lamports),
+                                        priority_fee_lamports: Some(r.jito_tip_lamports as i64),
                                         simulation_success: true,
                                         error_message: None,
                                         simulated_at: chrono::Utc::now(),
@@ -765,7 +903,7 @@ async fn main() -> Result<()> {
                                     arb_store::queries::insert_simulation(&trig_pool, &sim).await.ok();
 
                                     // Store execution record with latency
-                                    let tip = arb_sim::JitoBundler::calculate_tip(r.net_profit_lamports);
+                                    let tip = r.jito_tip_lamports;
                                     let exec = arb_types::ExecutionResult {
                                         id: uuid::Uuid::new_v4(),
                                         strategy,
@@ -797,6 +935,8 @@ async fn main() -> Result<()> {
                                     ).await.ok();
                                 }
                             }
+                            };
+                            tokio::join!(observation_fut, scan_fut);
                         });
                     } else {
                         // Signal received but not actionable -- store for dashboard

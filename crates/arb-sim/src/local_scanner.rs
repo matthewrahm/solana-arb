@@ -13,13 +13,7 @@ use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
 use crate::amm_quoter::AmmQuoter;
-
-/// Estimated total tx cost for a 2-leg arb (2 swaps via Jito bundle).
-/// Base fee (5K) + priority fee (1M) per swap, plus Jito tip estimate.
-const TX_COST_LAMPORTS: i64 = 2_500_000;
-
-/// Execution penalty in bps to model real-world losses (slippage, latency).
-const EXECUTION_PENALTY_BPS: f64 = 30.0;
+use crate::cost_model::CostModel;
 
 /// Pool registry: maps token_mint -> list of known pools with vault info.
 pub type PoolRegistry = Arc<RwLock<HashMap<String, Vec<KnownPool>>>>;
@@ -36,6 +30,7 @@ pub struct LocalScanner {
     client: Client,
     rpc_url: String,
     pub sol_usd_price: Arc<RwLock<f64>>,
+    pub cost_model: CostModel,
 }
 
 // ── DexScreener types for pool lookup ──
@@ -87,12 +82,21 @@ impl LocalScanner {
         rpc_url: &str,
         sol_usd_price: Arc<RwLock<f64>>,
     ) -> Self {
+        Self::with_cost_model(rpc_url, sol_usd_price, CostModel::default())
+    }
+
+    pub fn with_cost_model(
+        rpc_url: &str,
+        sol_usd_price: Arc<RwLock<f64>>,
+        cost_model: CostModel,
+    ) -> Self {
         Self {
             quoter: AmmQuoter::new(rpc_url),
             pool_registry: new_pool_registry(),
             client: Client::new(),
             rpc_url: rpc_url.to_string(),
             sol_usd_price,
+            cost_model,
         }
     }
 
@@ -187,19 +191,7 @@ impl LocalScanner {
                     continue;
                 }
 
-                // Apply execution penalty
-                let penalty = (sol_out as f64 * EXECUTION_PENALTY_BPS / 10_000.0) as u64;
-                let realistic_out = sol_out.saturating_sub(penalty);
-
-                let input = trade_lamports as i64;
-                let output = realistic_out as i64;
-                let gross = output - input;
-                let net = gross - TX_COST_LAMPORTS;
-                let profit_bps = if input > 0 {
-                    (gross as f64 / input as f64) * 10_000.0
-                } else {
-                    0.0
-                };
+                let econ = self.cost_model.compute(trade_lamports, sol_out);
 
                 let result = CrossVenueResult {
                     token_mint: token_mint.to_string(),
@@ -208,24 +200,28 @@ impl LocalScanner {
                     sell_pool: sell_pool.clone(),
                     input_lamports: trade_lamports,
                     tokens_received,
-                    output_lamports: realistic_out,
-                    gross_profit_lamports: gross,
-                    net_profit_lamports: net,
-                    profit_bps,
-                    profitable: net > 0,
+                    output_lamports: econ.realistic_output_lamports,
+                    gross_profit_lamports: econ.gross_profit_lamports,
+                    net_profit_lamports: econ.net_profit_lamports,
+                    profit_bps: econ.profit_bps,
+                    profitable: econ.net_profit_lamports > 0,
+                    fixed_cost_lamports: econ.fixed_cost_lamports,
+                    jito_tip_lamports: econ.jito_tip_lamports,
+                    slippage_lamports: econ.slippage_lamports,
                 };
 
                 if result.profitable {
                     let sol_usd = *self.sol_usd_price.read().await;
-                    let net_sol = net as f64 / 1e9;
+                    let net_sol = econ.net_profit_lamports as f64 / 1e9;
                     info!(
-                        "LOCAL *** PROFIT *** {} | buy {} sell {} | +{:.6} SOL (${:.4}) | {:.1} bps",
+                        "LOCAL *** PROFIT *** {} | buy {} sell {} | +{:.6} SOL (${:.4}) | {:.1} bps | tip {} lamports",
                         token_symbol,
                         buy_pool.dex,
                         sell_pool.dex,
                         net_sol,
                         net_sol * sol_usd,
-                        profit_bps,
+                        econ.profit_bps,
+                        econ.jito_tip_lamports,
                     );
                     return Ok(result);
                 }
@@ -233,7 +229,7 @@ impl LocalScanner {
                 // Track best (least negative)
                 match &best_result {
                     None => best_result = Some(result),
-                    Some(prev) if net > prev.net_profit_lamports => {
+                    Some(prev) if econ.net_profit_lamports > prev.net_profit_lamports => {
                         best_result = Some(result);
                     }
                     _ => {}
@@ -328,18 +324,7 @@ impl LocalScanner {
                     continue;
                 }
 
-                let penalty = (sol_out as f64 * EXECUTION_PENALTY_BPS / 10_000.0) as u64;
-                let realistic_out = sol_out.saturating_sub(penalty);
-
-                let input = trade_lamports as i64;
-                let output = realistic_out as i64;
-                let gross = output - input;
-                let net = gross - TX_COST_LAMPORTS;
-                let profit_bps = if input > 0 {
-                    (gross as f64 / input as f64) * 10_000.0
-                } else {
-                    0.0
-                };
+                let econ = self.cost_model.compute(trade_lamports, sol_out);
 
                 let result = CrossVenueResult {
                     token_mint: token_mint.to_string(),
@@ -348,16 +333,19 @@ impl LocalScanner {
                     sell_pool: sell_pool.clone(),
                     input_lamports: trade_lamports,
                     tokens_received,
-                    output_lamports: realistic_out,
-                    gross_profit_lamports: gross,
-                    net_profit_lamports: net,
-                    profit_bps,
-                    profitable: net > 0,
+                    output_lamports: econ.realistic_output_lamports,
+                    gross_profit_lamports: econ.gross_profit_lamports,
+                    net_profit_lamports: econ.net_profit_lamports,
+                    profit_bps: econ.profit_bps,
+                    profitable: econ.net_profit_lamports > 0,
+                    fixed_cost_lamports: econ.fixed_cost_lamports,
+                    jito_tip_lamports: econ.jito_tip_lamports,
+                    slippage_lamports: econ.slippage_lamports,
                 };
 
                 match &best_result {
                     None => best_result = Some(result),
-                    Some(prev) if net > prev.net_profit_lamports => {
+                    Some(prev) if econ.net_profit_lamports > prev.net_profit_lamports => {
                         best_result = Some(result);
                     }
                     _ => {}
@@ -368,6 +356,135 @@ impl LocalScanner {
         best_result.ok_or_else(|| {
             anyhow::anyhow!("No valid cross-venue routes for {}", token_symbol)
         })
+    }
+
+    /// Same-pool back-run: a large swap just moved the pool's price.
+    /// We trade the OPPOSITE direction on the SAME pool to capture mean-reversion,
+    /// sized as a fraction of the trigger so we don't cause further slippage.
+    ///
+    /// Edge hypothesis: a 2+ SOL trade on a thin PumpSwap pool pushes price by 20-50 bps.
+    /// For the ~100-500ms before Jupiter + other bots close the window, the post-trade
+    /// price is stale relative to the broader market. A small counter-trade + reverse
+    /// captures the gap minus costs.
+    ///
+    /// This is still a round-trip (SOL -> TOKEN -> SOL or TOKEN -> SOL -> TOKEN),
+    /// but buy_pool == sell_pool. The profit comes from time-decay of the imbalance,
+    /// not cross-venue price diff. Only meaningful if caller can execute within ~1 slot.
+    pub async fn scan_same_pool_backrun(
+        &self,
+        token_mint: &str,
+        token_symbol: &str,
+        trigger_dex: Dex,
+        trigger_direction: SwapDirection,
+        signal_sol: f64,
+    ) -> Result<CrossVenueResult> {
+        // 10% of trigger SOL, clamped 0.05-1 SOL. Smaller than cross-venue because
+        // we're trading into the same pool the trigger just impacted.
+        let trade_sol = (signal_sol * 0.1).clamp(0.05, 1.0);
+        let trade_lamports = (trade_sol * 1e9) as u64;
+
+        let pools = self.get_or_discover_pools(token_mint).await?;
+
+        // Pick first pool on the triggering DEX — pools are already liquidity-sorted
+        // via DexScreener discovery + dedup_by_dex keeps one-per-DEX.
+        let pool = pools
+            .iter()
+            .find(|p| p.dex == trigger_dex)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "No {} pool found for {} (have {} pools on other DEXs)",
+                    trigger_dex, token_symbol, pools.len()
+                )
+            })?;
+
+        // Leg 1 direction = opposite of trigger.
+        //   Trigger BUY (SOL -> TOKEN pushed price up): we SELL first (TOKEN -> SOL), then BUY back (SOL -> TOKEN)
+        //   Trigger SELL (TOKEN -> SOL pushed price down): we BUY first (SOL -> TOKEN), then SELL back (TOKEN -> SOL)
+        //
+        // Both cases are a round-trip on the same pool. We start with SOL either way
+        // (we don't hold the token), so actually we can only trade:
+        //   BUY trigger: start SOL, swap SOL->TOKEN (into elevated-price side — bad), wait for revert, swap TOKEN->SOL
+        //   SELL trigger: start SOL, swap SOL->TOKEN (into depressed-price side — good), wait for revert, swap TOKEN->SOL
+        //
+        // So ONLY SELL triggers are exploitable starting from SOL. On BUY triggers the
+        // mean-reversion exit direction is opposite (we'd need inventory of the token).
+        // For now we skip BUY triggers in same-pool mode.
+        if trigger_direction == SwapDirection::Buy {
+            anyhow::bail!(
+                "Same-pool back-run on BUY trigger requires token inventory — skipping {} for now",
+                token_symbol
+            );
+        }
+
+        info!(
+            "SAME-POOL BACK-RUN: {} on {} pool {} (trigger {} {:.1} SOL, our trade {:.3} SOL)",
+            token_symbol,
+            pool.dex,
+            &pool.pool_address[..8.min(pool.pool_address.len())],
+            trigger_direction,
+            signal_sol,
+            trade_sol,
+        );
+
+        // Leg 1: SOL -> TOKEN on the same pool (buy into the depressed side)
+        let leg1 = self.quoter.quote_swap(pool, WSOL_MINT, trade_lamports).await?;
+        if leg1.output_amount == 0 {
+            anyhow::bail!("Leg 1 quote returned 0 tokens for {}", token_symbol);
+        }
+        let tokens_received = leg1.output_amount;
+
+        // Leg 2: TOKEN -> SOL on the SAME pool.
+        // Note: without modeling the trigger swap's actual impact on reserves, this quote
+        // will show a small loss (AMM fee on both legs with no price move). The "edge"
+        // is the revert of the trigger's impact, which we don't model in the quoter yet.
+        // For Phase B we report raw round-trip economics and flag when the post-trigger
+        // mismatch would be favorable.
+        let leg2 = self.quoter.quote_swap(pool, token_mint, tokens_received).await?;
+        let sol_out = leg2.output_amount;
+
+        // Sanity
+        if sol_out > trade_lamports * 5 {
+            warn!(
+                "Sanity check failed: same-pool sell returned {} from {} input (>5x), skipping",
+                sol_out, trade_lamports
+            );
+            anyhow::bail!("Same-pool sanity fail for {}", token_symbol);
+        }
+
+        let econ = self.cost_model.compute(trade_lamports, sol_out);
+
+        let result = CrossVenueResult {
+            token_mint: token_mint.to_string(),
+            token_symbol: token_symbol.to_string(),
+            buy_pool: pool.clone(),
+            sell_pool: pool.clone(),
+            input_lamports: trade_lamports,
+            tokens_received,
+            output_lamports: econ.realistic_output_lamports,
+            gross_profit_lamports: econ.gross_profit_lamports,
+            net_profit_lamports: econ.net_profit_lamports,
+            profit_bps: econ.profit_bps,
+            profitable: econ.net_profit_lamports > 0,
+            fixed_cost_lamports: econ.fixed_cost_lamports,
+            jito_tip_lamports: econ.jito_tip_lamports,
+            slippage_lamports: econ.slippage_lamports,
+        };
+
+        if result.profitable {
+            let sol_usd = *self.sol_usd_price.read().await;
+            let net_sol = econ.net_profit_lamports as f64 / 1e9;
+            info!(
+                "SAME-POOL *** PROFIT *** {} | {} pool | +{:.6} SOL (${:.4}) | {:.1} bps | tip {}",
+                token_symbol,
+                pool.dex,
+                net_sol,
+                net_sol * sol_usd,
+                econ.profit_bps,
+                econ.jito_tip_lamports,
+            );
+        }
+
+        Ok(result)
     }
 
     /// Keep at most 1 pool per DEX to minimize RPC calls.

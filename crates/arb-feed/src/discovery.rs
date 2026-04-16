@@ -156,6 +156,91 @@ pub async fn discover_new_tokens(
     Ok(results)
 }
 
+/// Fetch trending/boosted Solana tokens from DexScreener that have 2+ pools on different DEXs.
+/// These are the tokens where cross-venue arb is actually possible.
+pub async fn discover_trending_multi_pool(
+    known_mints: &HashSet<String>,
+    min_liquidity: f64,
+) -> Result<Vec<DiscoveredToken>> {
+    let client = reqwest::Client::new();
+    let dex_client = crate::dexscreener::DexScreenerClient::new();
+
+    // Fetch boosted tokens (tokens that are actively being promoted/traded)
+    let profiles: Vec<TokenProfile> = client
+        .get("https://api.dexscreener.com/token-boosts/latest/v1")
+        .send()
+        .await?
+        .json()
+        .await
+        .context("Failed to parse boosted token profiles")?;
+
+    let solana_tokens: Vec<&TokenProfile> = profiles
+        .iter()
+        .filter(|t| t.chain_id == "solana" && !known_mints.contains(&t.token_address))
+        .collect();
+
+    if solana_tokens.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    info!("Trending discovery: checking {} boosted Solana tokens for multi-pool", solana_tokens.len());
+
+    let mut results = Vec::new();
+
+    for (i, token) in solana_tokens.iter().enumerate().take(15) {
+        if i > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        }
+
+        match dex_client.get_all_pairs(&token.token_address, min_liquidity).await {
+            Ok(pairs) => {
+                if pairs.len() < 2 {
+                    continue; // need 2+ pools for cross-venue arb
+                }
+
+                // Check if pools are on DIFFERENT DEXs
+                let dexes: HashSet<String> = pairs.iter().map(|p| p.dex.to_string()).collect();
+                if dexes.len() < 2 {
+                    continue; // all pools on same DEX, no cross-venue opportunity
+                }
+
+                let best = pairs.iter()
+                    .max_by(|a, b| a.liquidity_usd.partial_cmp(&b.liquidity_usd).unwrap())
+                    .unwrap();
+
+                let symbol = dex_client
+                    .get_token_symbol(&token.token_address)
+                    .await
+                    .ok()
+                    .flatten()
+                    .unwrap_or_else(|| format!("{}..{}", &token.token_address[..4], &token.token_address[token.token_address.len()-4..]));
+
+                info!(
+                    "MULTI-POOL: {} ({}) | {} pools on {} DEXs | liq: ${:.0} | DEXs: {:?}",
+                    symbol, &token.token_address[..8], pairs.len(), dexes.len(),
+                    best.liquidity_usd, dexes
+                );
+
+                results.push(DiscoveredToken {
+                    mint: token.token_address.clone(),
+                    symbol,
+                    liquidity_usd: best.liquidity_usd,
+                    dex: best.dex,
+                    pair_address: best.pool_address.clone().unwrap_or_default(),
+                    safe: true, // boosted tokens are already established
+                    safety_note: format!("{} pools across {} DEXs", pairs.len(), dexes.len()),
+                });
+            }
+            Err(e) => {
+                warn!("Trending discovery: failed for {}: {}", &token.token_address[..8], e);
+            }
+        }
+    }
+
+    info!("Trending discovery: {} multi-pool tokens found", results.len());
+    Ok(results)
+}
+
 /// Check token safety by reading the mint account.
 /// Returns (is_safe, description).
 async fn check_token_safety(rpc_url: &str, mint: &str) -> (bool, String) {

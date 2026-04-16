@@ -431,6 +431,51 @@ pub async fn get_recent_executions(pool: &PgPool, limit: i64) -> Result<Vec<Exec
     Ok(rows)
 }
 
+// ── Observation Queries ──
+
+#[allow(clippy::too_many_arguments)]
+pub async fn insert_observation(
+    pool: &PgPool,
+    signature: Option<&str>,
+    token_mint: &str,
+    token_symbol: Option<&str>,
+    dex: &str,
+    pool_address: &str,
+    trigger_direction: &str,
+    trigger_sol_equivalent: f64,
+    pool_implied_price_usd: f64,
+    fair_price_usd: f64,
+    delta_bps: f64,
+    pool_liquidity_usd: f64,
+    observation_latency_ms: i64,
+) -> Result<()> {
+    sqlx::query(
+        r#"
+        INSERT INTO stale_reserve_observations
+            (signature, token_mint, token_symbol, dex, pool_address,
+             trigger_direction, trigger_sol_equivalent,
+             pool_implied_price_usd, fair_price_usd, delta_bps,
+             pool_liquidity_usd, observation_latency_ms)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        "#,
+    )
+    .bind(signature)
+    .bind(token_mint)
+    .bind(token_symbol)
+    .bind(dex)
+    .bind(pool_address)
+    .bind(trigger_direction)
+    .bind(trigger_sol_equivalent)
+    .bind(pool_implied_price_usd)
+    .bind(fair_price_usd)
+    .bind(delta_bps)
+    .bind(pool_liquidity_usd)
+    .bind(observation_latency_ms)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 #[derive(sqlx::FromRow, serde::Serialize)]
 pub struct ExecutionRow {
     pub id: uuid::Uuid,

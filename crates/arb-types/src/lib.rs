@@ -266,6 +266,9 @@ pub struct CrossVenueResult {
     pub net_profit_lamports: i64,
     pub profit_bps: f64,
     pub profitable: bool,
+    pub fixed_cost_lamports: i64,
+    pub jito_tip_lamports: u64,
+    pub slippage_lamports: u64,
 }
 
 // ── Execution Types ──
@@ -294,6 +297,7 @@ pub enum Strategy {
     CrossVenueArb,
     GraduationSnipe,
     BackRun,
+    SamePoolBackRun,
 }
 
 impl std::fmt::Display for Strategy {
@@ -302,6 +306,7 @@ impl std::fmt::Display for Strategy {
             Strategy::CrossVenueArb => write!(f, "cross_venue_arb"),
             Strategy::GraduationSnipe => write!(f, "graduation_snipe"),
             Strategy::BackRun => write!(f, "back_run"),
+            Strategy::SamePoolBackRun => write!(f, "same_pool_back_run"),
         }
     }
 }

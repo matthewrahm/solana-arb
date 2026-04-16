@@ -23,6 +23,12 @@ pub async fn run_migrations(pool: &PgPool) -> Result<()> {
     let safety = include_str!("../../../migrations/003_token_safety.sql");
     sqlx::raw_sql(safety).execute(pool).await?;
 
+    let executions = include_str!("../../../migrations/004_executions.sql");
+    sqlx::raw_sql(executions).execute(pool).await?;
+
+    let observations = include_str!("../../../migrations/005_observations.sql");
+    sqlx::raw_sql(observations).execute(pool).await?;
+
     info!("Database migrations applied");
     Ok(())
 }

@@ -1,8 +1,8 @@
 use arb_types::{Dex, SwapDirection, SwapSignal};
-use tracing::info;
+use tracing::{debug, info};
 
 /// Determines if a swap signal warrants an immediate cross-venue scan.
-/// Returns scan parameters: (token_mint, buy_on, sell_on) if actionable.
+/// Returns scan parameters if actionable.
 pub struct SwapAnalyzer {
     /// Minimum SOL value to consider a swap significant enough to create a spread
     min_sol_threshold: f64,
@@ -31,16 +31,27 @@ impl SwapAnalyzer {
     }
 
     pub fn analyze(&self, signal: &SwapSignal) -> Option<ScanRequest> {
+        let sig_short = &signal.signature[..8.min(signal.signature.len())];
+
         // Skip signals below threshold
         if signal.sol_equivalent < self.min_sol_threshold {
+            debug!("SKIP {} | {:.1} SOL < {:.1} threshold on {} [{}]",
+                sig_short, signal.sol_equivalent, self.min_sol_threshold,
+                signal.platform, &signal.token_mint[..8.min(signal.token_mint.len())]);
             return None;
         }
 
         // Skip Jupiter-routed swaps -- Jupiter already optimized the route,
         // so there's no residual spread to capture
         if signal.platform == Dex::Jupiter {
+            debug!("SKIP {} | Jupiter-routed {:.1} SOL [{}]",
+                sig_short, signal.sol_equivalent, &signal.token_mint[..8.min(signal.token_mint.len())]);
             return None;
         }
+
+        // All non-Jupiter signals above threshold are actionable:
+        // PumpFun, PumpSwap, Raydium, Orca -- let the scanner determine
+        // if multi-pool cross-venue arb is possible
 
         // Determine buy/sell venue strategy based on trigger direction
         let (buy_dex, sell_dex) = match signal.direction {
